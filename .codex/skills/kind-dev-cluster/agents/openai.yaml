@@ -1,0 +1,4 @@
+interface:
+  display_name: "DeployDock Kind Dev Cluster"
+  short_description: "Create and verify the pinned six-node Kind cluster"
+  default_prompt: "Use $kind-dev-cluster to create and verify the DeployDock development cluster."
