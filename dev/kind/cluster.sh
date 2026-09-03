@@ -180,16 +180,7 @@ validate_cluster() {
     "${KIND_CLUSTER_NAME}" "${KUBERNETES_VERSION}"
 }
 
-create_cluster() {
-  ensure_tools
-  require_docker
-
-  if cluster_exists; then
-    printf 'Cluster %s already exists; validating without modifying it.\n' "${KIND_CLUSTER_NAME}"
-    validate_cluster
-    return
-  fi
-
+create_new_cluster() {
   mkdir -p "${STATE_DIR}"
   "${KIND_BIN}" create cluster \
     --name "${KIND_CLUSTER_NAME}" \
@@ -199,6 +190,65 @@ create_cluster() {
     --wait 5m
   chmod 0600 "${KUBECONFIG_FILE}"
   validate_cluster
+}
+
+delete_existing_cluster() {
+  "${KIND_BIN}" delete cluster --name "${KIND_CLUSTER_NAME}"
+  rm -f "${KUBECONFIG_FILE}"
+}
+
+choose_existing_cluster_action() {
+  local choice
+
+  if [[ ! -t 0 ]]; then
+    fail "Cluster ${KIND_CLUSTER_NAME} already exists; rerun with 'up --keep' or 'up --recreate'"
+  fi
+
+  printf 'Cluster %s already exists. Keep and validate it [K], or stop and recreate it [R]? [K]: ' \
+    "${KIND_CLUSTER_NAME}" >&2
+  read -r choice
+
+  case "${choice:-k}" in
+    k|K|keep|KEEP|Keep)
+      printf 'keep\n'
+      ;;
+    r|R|recreate|RECREATE|Recreate)
+      printf 'recreate\n'
+      ;;
+    *)
+      fail "Invalid choice: ${choice}. Enter K to keep or R to recreate"
+      ;;
+  esac
+}
+
+create_cluster() {
+  local existing_action="${1:-ask}"
+
+  ensure_tools
+  require_docker
+
+  if cluster_exists; then
+    if [[ "${existing_action}" == "ask" ]]; then
+      existing_action="$(choose_existing_cluster_action)"
+    fi
+
+    case "${existing_action}" in
+      keep)
+        printf 'Keeping cluster %s; validating without modifying it.\n' "${KIND_CLUSTER_NAME}"
+        validate_cluster
+        return
+        ;;
+      recreate)
+        printf 'Stopping and recreating cluster %s.\n' "${KIND_CLUSTER_NAME}"
+        delete_existing_cluster
+        ;;
+      *)
+        fail "Unknown existing-cluster action: ${existing_action}"
+        ;;
+    esac
+  fi
+
+  create_new_cluster
 }
 
 show_status() {
@@ -218,8 +268,7 @@ delete_cluster() {
     return
   fi
 
-  "${KIND_BIN}" delete cluster --name "${KIND_CLUSTER_NAME}"
-  rm -f "${KUBECONFIG_FILE}"
+  delete_existing_cluster
 }
 
 show_versions() {
@@ -231,25 +280,37 @@ show_versions() {
 }
 
 usage() {
-  printf 'Usage: %s <up|status|validate|down|kubeconfig|versions>\n' "$0"
+  printf 'Usage:\n'
+  printf '  %s up [--keep|--recreate]\n' "$0"
+  printf '  %s <status|validate|down|kubeconfig|versions>\n' "$0"
 }
 
 case "${1:-}" in
   up)
-    create_cluster
+    [[ "$#" -le 2 ]] || { usage >&2; exit 1; }
+    case "${2:-}" in
+      '') create_cluster ask ;;
+      --keep) create_cluster keep ;;
+      --recreate) create_cluster recreate ;;
+      *) usage >&2; exit 1 ;;
+    esac
     ;;
   status)
+    [[ "$#" -eq 1 ]] || { usage >&2; exit 1; }
     show_status
     ;;
   validate)
+    [[ "$#" -eq 1 ]] || { usage >&2; exit 1; }
     ensure_tools
     require_docker
     validate_cluster
     ;;
   down)
+    [[ "$#" -eq 1 ]] || { usage >&2; exit 1; }
     delete_cluster
     ;;
   kubeconfig)
+    [[ "$#" -eq 1 ]] || { usage >&2; exit 1; }
     ensure_tools
     require_docker
     cluster_exists || fail "Kind cluster does not exist: ${KIND_CLUSTER_NAME}"
@@ -257,6 +318,7 @@ case "${1:-}" in
     printf '%s\n' "${KUBECONFIG_FILE}"
     ;;
   versions)
+    [[ "$#" -eq 1 ]] || { usage >&2; exit 1; }
     show_versions
     ;;
   *)

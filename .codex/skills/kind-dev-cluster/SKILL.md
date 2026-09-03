@@ -17,11 +17,14 @@ Use the repository entrypoint `./dev/kind/cluster.sh`. It pins Kind, kubectl, an
 ## Workflow
 
 1. Run from the repository root.
-2. Use `./dev/kind/cluster.sh up` to create the cluster. The command downloads verified tool binaries when absent, creates `deploydock-dev`, waits for all nodes, and validates the exact topology and Kubernetes version.
-3. If the cluster already exists, `up` validates it without changing it. If validation reports a topology, version, or image mismatch, stop and report it; never delete or recreate the cluster implicitly.
-4. Use `./dev/kind/cluster.sh status` for a node overview and `./dev/kind/cluster.sh validate` for the full invariant check.
-5. Report the kubeconfig path from `./dev/kind/cluster.sh kubeconfig` when another command must access this cluster. Pass it explicitly with `--kubeconfig`; do not merge it into the user's default kubeconfig.
-6. Run `./dev/kind/cluster.sh down` only when the user explicitly requests deletion or recreation of this development cluster.
+2. Before starting, use `./dev/kind/cluster.sh status` to determine whether `deploydock-dev` already exists. A missing-cluster error means it is safe to proceed with plain `up`.
+3. If the cluster does not exist, use `./dev/kind/cluster.sh up`. The command downloads verified tool binaries when absent, creates the cluster, waits for all nodes, and validates the exact topology and Kubernetes version.
+4. If the cluster already exists and the user has not stated a preference, ask whether to keep and validate it or stop and recreate it. Do not choose recreation on the user's behalf.
+5. After the user chooses, run `./dev/kind/cluster.sh up --keep` to preserve and validate the existing cluster, or `./dev/kind/cluster.sh up --recreate` to delete and rebuild it. In a terminal, plain `up` presents the same choice interactively; non-interactive execution requires one of these flags.
+6. If validation reports a topology, version, or image mismatch while keeping the cluster, stop and report it. Never delete or recreate the cluster implicitly.
+7. Use `./dev/kind/cluster.sh status` for a node overview and `./dev/kind/cluster.sh validate` for the full invariant check.
+8. Report the kubeconfig path from `./dev/kind/cluster.sh kubeconfig` when another command must access this cluster. Pass it explicitly with `--kubeconfig`; do not merge it into the user's default kubeconfig.
+9. Run `./dev/kind/cluster.sh down` only when the user explicitly requests deletion of this development cluster.
 
 ## Fixed environment
 
