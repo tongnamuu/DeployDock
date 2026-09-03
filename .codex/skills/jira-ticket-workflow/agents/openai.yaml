@@ -1,0 +1,4 @@
+interface:
+  display_name: "DeployDock Jira Workflow"
+  short_description: "Create DeployDock DEP tickets only when requested"
+  default_prompt: "Use $jira-ticket-workflow to create a DEP ticket exactly as requested without changing its status."
