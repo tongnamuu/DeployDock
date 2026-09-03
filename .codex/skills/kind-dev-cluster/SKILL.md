@@ -7,6 +7,13 @@ description: Create, validate, inspect, or remove DeployDock's pinned six-node K
 
 Use the repository entrypoint `./dev/kind/cluster.sh`. It pins Kind, kubectl, and the Kind node image by version and SHA-256, and stores its kubeconfig under the ignored `dev/.state` directory instead of changing the user's default kubeconfig.
 
+## Execution permissions
+
+- `up`, `status`, `validate`, `kubeconfig`, and `down` access the user's Docker Unix socket, which is outside the normal workspace sandbox. Request sandbox escalation on the first invocation of one of these commands; do not first probe Docker or retry after an expected sandbox denial.
+- When `exec_command` supports scoped escalation, invoke the exact repository command with `sandbox_permissions: require_escalated`, explain that it needs the local Docker socket, and request the reusable prefix `./dev/kind/cluster.sh`.
+- Keep the approval scoped to this entrypoint. Do not request unrestricted Docker access, disable the sandbox, or use a full-access mode.
+- `./dev/kind/cluster.sh versions` does not access Docker or the network and can run inside the normal sandbox.
+
 ## Workflow
 
 1. Run from the repository root.
