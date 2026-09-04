@@ -1,0 +1,35 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: deploydockusers.deploydock.io
+spec:
+  group: deploydock.io
+  scope: Namespaced
+  names:
+    plural: deploydockusers
+    singular: deploydockuser
+    kind: DeployDockUser
+    shortNames:
+      - dduser
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          required:
+            - spec
+          properties:
+            spec:
+              type: object
+              required:
+                - principal
+                - credentialsSecretName
+              properties:
+                principal:
+                  type: string
+                  minLength: 1
+                credentialsSecretName:
+                  type: string
+                  minLength: 1
