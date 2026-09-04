@@ -1,0 +1,13 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: deploydock-alice-view
+  namespace: team-a
+subjects:
+  - apiGroup: rbac.authorization.k8s.io
+    kind: User
+    name: deploydock:alice
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: view
