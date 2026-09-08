@@ -34,7 +34,15 @@ class SecurityConfiguration {
             .formLogin { it.disable() }
             .httpBasic { it.disable() }
             .authorizeExchange {
-                it.pathMatchers("/", "/css/**", "/js/**", "/api/auth/signup", "/api/auth/login").permitAll()
+                it.pathMatchers(
+                    "/",
+                    "/admin/**",
+                    "/custom-resources.html",
+                    "/css/**",
+                    "/js/**",
+                    "/api/auth/signup",
+                    "/api/auth/login",
+                ).permitAll()
                     .anyExchange().authenticated()
             }
             .oauth2ResourceServer { it.jwt { } }

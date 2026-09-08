@@ -3,6 +3,7 @@ package com.deploy.k8s.DeployDock.kubernetes
 import com.deploy.k8s.DeployDock.auth.DuplicateUserException
 import com.deploy.k8s.DeployDock.auth.StoredUser
 import com.deploy.k8s.DeployDock.auth.UserAccountRepository
+import com.deploy.k8s.DeployDock.auth.UserIdentity
 import com.deploy.k8s.DeployDock.auth.UserStoreException
 import com.deploy.k8s.DeployDock.config.DeployDockKubernetesProperties
 import io.fabric8.kubernetes.api.model.ObjectMetaBuilder
@@ -84,6 +85,27 @@ class KubernetesUserAccountRepository(
             ?: throw UserStoreException("credentials for '$username' are invalid")
         val passwordHash = String(Base64.getDecoder().decode(encodedHash), StandardCharsets.UTF_8)
         return StoredUser(username, user.spec.principal, passwordHash)
+    }
+
+    override fun exists(username: String): Boolean = try {
+        client.resources(DeployDockUser::class.java)
+            .inNamespace(properties.controlNamespace)
+            .withName(username)
+            .get() != null
+    } catch (exception: KubernetesClientException) {
+        if (exception.code == 404) false
+        else throw UserStoreException("failed to check user '$username'", exception)
+    }
+
+    override fun findAll(): List<UserIdentity> = try {
+        client.resources(DeployDockUser::class.java)
+            .inNamespace(properties.controlNamespace)
+            .list()
+            .items
+            .map { UserIdentity(it.metadata.name, it.spec.principal) }
+            .sortedBy { it.username }
+    } catch (exception: KubernetesClientException) {
+        throw UserStoreException("failed to list users", exception)
     }
 
     companion object {

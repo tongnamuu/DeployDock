@@ -14,6 +14,8 @@
         <span>DeployDock</span>
     </a>
     <div class="session-actions">
+        <a id="custom-resource-page-link" class="button button-ghost" href="/custom-resources.html" hidden>CR 생성</a>
+        <a id="admin-crd-page-link" class="button button-ghost" href="/admin/crds.html" hidden>CRD 등록</a>
         <span id="session-user" class="session-user" hidden></span>
         <button id="logout-button" class="button button-ghost" type="button" hidden>로그아웃</button>
     </div>
@@ -77,7 +79,7 @@
                 <div id="namespace-list" class="namespace-list" aria-live="polite"></div>
             </div>
 
-            <aside class="panel create-panel">
+            <aside id="namespace-create-panel" class="panel create-panel" hidden>
                 <p class="section-label">ADMIN</p>
                 <h2>네임스페이스 생성</h2>
                 <p>생성 권한은 Kubernetes RBAC로 확인합니다.</p>
@@ -90,6 +92,56 @@
                 </form>
             </aside>
         </div>
+
+        <section id="permission-admin" class="panel permission-admin" hidden>
+            <div class="workspace-heading">
+                <div>
+                    <p class="section-label">MEMBER ACCESS</p>
+                    <h2>네임스페이스 권한 관리</h2>
+                </div>
+                <div class="permission-actions">
+                    <button id="revoke-permissions-button" class="button button-danger" type="button">전체 회수</button>
+                    <button id="save-permissions-button" class="button button-primary" type="button">권한 저장</button>
+                </div>
+            </div>
+
+            <div class="permission-selectors">
+                <label>
+                    네임스페이스
+                    <select id="permission-namespace"></select>
+                </label>
+                <label>
+                    멤버
+                    <select id="permission-user"></select>
+                </label>
+            </div>
+
+            <div class="permission-layout">
+                <div class="permission-table-wrap">
+                    <table class="permission-table">
+                        <thead>
+                        <tr>
+                            <th>리소스</th>
+                            <th>get</th>
+                            <th>list</th>
+                            <th>watch</th>
+                            <th>create</th>
+                            <th>update</th>
+                            <th>patch</th>
+                            <th>delete</th>
+                        </tr>
+                        </thead>
+                        <tbody id="permission-matrix"></tbody>
+                    </table>
+                </div>
+
+                <aside class="mapping-panel">
+                    <h3>현재 매핑</h3>
+                    <p>선택한 네임스페이스에 연결된 멤버입니다.</p>
+                    <div id="member-mappings" class="member-mappings"></div>
+                </aside>
+            </div>
+        </section>
     </section>
 </main>
 

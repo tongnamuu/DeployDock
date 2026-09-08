@@ -17,7 +17,10 @@ metadata:
 rules:
   - apiGroups: ["deploydock.io"]
     resources: ["deploydockusers"]
-    verbs: ["get", "create"]
+    verbs: ["get", "list", "create"]
+  - apiGroups: ["deploydock.io"]
+    resources: ["deploydockpermissionpolicies"]
+    verbs: ["get", "create", "update", "patch"]
   - apiGroups: [""]
     resources: ["secrets"]
     verbs: ["get", "create", "delete"]
@@ -47,6 +50,15 @@ rules:
   - apiGroups: ["authorization.k8s.io"]
     resources: ["subjectaccessreviews"]
     verbs: ["create"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["roles", "rolebindings"]
+    verbs: ["get", "list", "create", "update", "patch", "delete"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["roles"]
+    verbs: ["escalate", "bind"]
+  - apiGroups: ["apiextensions.k8s.io"]
+    resources: ["customresourcedefinitions"]
+    verbs: ["get"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
