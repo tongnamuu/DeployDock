@@ -43,3 +43,8 @@ data class StoredUser(
     val kubernetesPrincipal: String,
     val passwordHash: String,
 )
+
+data class UserIdentity(
+    val username: String,
+    val kubernetesPrincipal: String,
+)

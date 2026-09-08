@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="DeployDock CRD 권한 카탈로그 관리">
+    <title>CRD 등록 · DeployDock</title>
+    <link rel="stylesheet" href="/css/app.css">
+</head>
+<body>
+<header class="topbar">
+    <a class="brand" href="/" aria-label="DeployDock 홈">
+        <span class="brand-mark">D</span>
+        <span>DeployDock</span>
+    </a>
+    <nav class="session-actions" aria-label="페이지 이동">
+        <a class="button button-ghost" href="/">홈</a>
+        <a class="button button-ghost" href="/custom-resources.html">CR 생성</a>
+        <button id="logout-button" class="button button-ghost" type="button">로그아웃</button>
+    </nav>
+</header>
+
+<main class="shell page-shell">
+    <section class="page-heading">
+        <p class="eyebrow">ADMIN · CUSTOM RESOURCES</p>
+        <h1>CRD 등록</h1>
+        <p>클러스터에 설치된 Namespaced CRD만 권한 카탈로그에 등록할 수 있습니다.</p>
+    </section>
+
+    <section id="access-message" class="panel access-message" aria-live="polite">관리자 권한을 확인하는 중입니다.</section>
+
+    <section id="admin-content" class="page-grid" hidden>
+        <section class="panel page-panel" aria-labelledby="registration-title">
+            <div class="panel-heading">
+                <div>
+                    <p class="section-label">REGISTER</p>
+                    <h2 id="registration-title">권한 카탈로그에 추가</h2>
+                </div>
+            </div>
+            <form id="crd-registration-form" class="form-stack">
+                <label>
+                    CRD 이름
+                    <input name="crdName" placeholder="widgets.example.com" required>
+                </label>
+                <label>
+                    표시 이름
+                    <input name="displayName" maxlength="80" placeholder="Widgets">
+                </label>
+                <fieldset class="verb-selector">
+                    <legend>관리자가 멤버에게 부여할 수 있는 동사</legend>
+                    <div>
+                        <label><input type="checkbox" name="allowedVerb" value="get" checked>get</label>
+                        <label><input type="checkbox" name="allowedVerb" value="list" checked>list</label>
+                        <label><input type="checkbox" name="allowedVerb" value="watch">watch</label>
+                        <label><input type="checkbox" name="allowedVerb" value="create">create</label>
+                        <label><input type="checkbox" name="allowedVerb" value="update">update</label>
+                        <label><input type="checkbox" name="allowedVerb" value="patch">patch</label>
+                        <label><input type="checkbox" name="allowedVerb" value="delete">delete</label>
+                    </div>
+                </fieldset>
+                <button class="button button-primary" type="submit">CRD 등록</button>
+            </form>
+        </section>
+
+        <section class="panel page-panel" aria-labelledby="registered-title">
+            <div class="panel-heading">
+                <div>
+                    <p class="section-label">CATALOG</p>
+                    <h2 id="registered-title">등록된 CRD</h2>
+                </div>
+                <button id="refresh-button" class="button button-secondary" type="button">새로고침</button>
+            </div>
+            <div id="custom-resource-registrations" class="custom-resource-registrations" aria-live="polite"></div>
+        </section>
+    </section>
+</main>
+
+<div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+<script src="/js/admin-crds.js" defer></script>
+</body>
+</html>

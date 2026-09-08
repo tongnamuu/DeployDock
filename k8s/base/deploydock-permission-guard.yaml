@@ -1,0 +1,156 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: deploydock-managed-role-guard
+spec:
+  failurePolicy: Fail
+  paramKind:
+    apiVersion: deploydock.io/v1alpha1
+    kind: DeployDockPermissionPolicy
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["rbac.authorization.k8s.io"]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE", "DELETE"]
+        resources: ["roles"]
+  matchConditions:
+    - name: deploydock-service-account-only
+      expression: request.userInfo.username == 'system:serviceaccount:deploydock-system:deploydock'
+  validations:
+    - expression: >-
+        request.namespace != 'default' &&
+        request.namespace != 'deploydock-system' &&
+        request.namespace != 'local-path-storage' &&
+        !request.namespace.startsWith('kube-')
+      message: DeployDock cannot manage member permissions in protected namespaces.
+    - expression: >-
+        request.operation != 'DELETE' ||
+        (has(oldObject.metadata.labels) &&
+         'deploydock.io/permission-manager' in oldObject.metadata.labels &&
+         oldObject.metadata.labels['deploydock.io/permission-manager'] == 'true' &&
+         (oldObject.metadata.name.startsWith('deploydock-member-') ||
+          (oldObject.metadata.name == 'deploydock-custom-resource-proxy' &&
+           'deploydock.io/component' in oldObject.metadata.labels &&
+           oldObject.metadata.labels['deploydock.io/component'] == 'custom-resource-proxy')))
+      message: DeployDock may delete only its managed member or custom-resource proxy Roles.
+    - expression: >-
+        request.operation == 'DELETE' ||
+        (has(object.metadata.labels) &&
+         'deploydock.io/permission-manager' in object.metadata.labels &&
+         object.metadata.labels['deploydock.io/permission-manager'] == 'true' &&
+         (('deploydock.io/user' in object.metadata.labels &&
+           object.metadata.name == 'deploydock-member-' + object.metadata.labels['deploydock.io/user']) ||
+          (object.metadata.name == 'deploydock-custom-resource-proxy' &&
+           'deploydock.io/component' in object.metadata.labels &&
+           object.metadata.labels['deploydock.io/component'] == 'custom-resource-proxy')))
+      message: DeployDock Roles require matching managed labels and names.
+    - expression: >-
+        request.operation == 'DELETE' ||
+        (object.rules.size() > 0 && object.rules.all(rule,
+          rule.apiGroups.size() == 1 &&
+          rule.resources.size() == 1 &&
+          rule.verbs.size() > 0 &&
+          !has(rule.resourceNames) &&
+          !has(rule.nonResourceURLs) &&
+          rule.verbs.all(verb, verb in ['get', 'list', 'watch', 'create', 'update', 'patch', 'delete']) &&
+          ((rule.apiGroups[0] == '' && rule.resources[0] in
+              ['pods', 'services', 'configmaps', 'secrets', 'persistentvolumeclaims']) ||
+           (rule.apiGroups[0] == 'apps' && rule.resources[0] in
+              ['deployments', 'statefulsets', 'daemonsets', 'replicasets']) ||
+           (rule.apiGroups[0] == 'batch' && rule.resources[0] in ['jobs', 'cronjobs']) ||
+           (rule.apiGroups[0] == 'networking.k8s.io' && rule.resources[0] in
+              ['ingresses', 'networkpolicies']) ||
+           (rule.apiGroups[0] == 'autoscaling' && rule.resources[0] == 'horizontalpodautoscalers') ||
+           params.spec.customResources.exists(entry,
+             entry.apiGroup == rule.apiGroups[0] &&
+             entry.resource == rule.resources[0] &&
+             rule.verbs.all(verb, verb in entry.allowedVerbs)))))
+      message: DeployDock member Roles may contain only catalog resources and verbs.
+    - expression: >-
+        request.operation == 'DELETE' ||
+        object.metadata.name != 'deploydock-custom-resource-proxy' ||
+        object.rules.all(rule,
+          rule.apiGroups.size() == 1 &&
+          rule.resources.size() == 1 &&
+          rule.verbs.size() == 1 &&
+          rule.verbs[0] == 'create' &&
+          params.spec.customResources.exists(entry,
+            entry.apiGroup == rule.apiGroups[0] &&
+            entry.resource == rule.resources[0] &&
+            'create' in entry.allowedVerbs))
+      message: The custom-resource proxy Role may grant create only for registered CRDs.
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: deploydock-managed-role-guard
+spec:
+  policyName: deploydock-managed-role-guard
+  paramRef:
+    name: default
+    namespace: deploydock-system
+    parameterNotFoundAction: Deny
+  validationActions: [Deny]
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: deploydock-managed-rolebinding-guard
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: ["rbac.authorization.k8s.io"]
+        apiVersions: ["v1"]
+        operations: ["CREATE", "UPDATE", "DELETE"]
+        resources: ["rolebindings"]
+  matchConditions:
+    - name: deploydock-service-account-only
+      expression: request.userInfo.username == 'system:serviceaccount:deploydock-system:deploydock'
+  validations:
+    - expression: >-
+        request.namespace != 'default' &&
+        request.namespace != 'deploydock-system' &&
+        request.namespace != 'local-path-storage' &&
+        !request.namespace.startsWith('kube-')
+      message: DeployDock cannot manage member permissions in protected namespaces.
+    - expression: >-
+        request.operation != 'DELETE' ||
+        (has(oldObject.metadata.labels) &&
+         'deploydock.io/permission-manager' in oldObject.metadata.labels &&
+         oldObject.metadata.labels['deploydock.io/permission-manager'] == 'true' &&
+         (oldObject.metadata.name.startsWith('deploydock-member-') ||
+          (oldObject.metadata.name == 'deploydock-custom-resource-proxy' &&
+           'deploydock.io/component' in oldObject.metadata.labels &&
+           oldObject.metadata.labels['deploydock.io/component'] == 'custom-resource-proxy')))
+      message: DeployDock may delete only its managed member or custom-resource proxy RoleBindings.
+    - expression: >-
+        request.operation == 'DELETE' ||
+        (has(object.metadata.labels) &&
+         'deploydock.io/permission-manager' in object.metadata.labels &&
+         object.metadata.labels['deploydock.io/permission-manager'] == 'true' &&
+         object.roleRef.apiGroup == 'rbac.authorization.k8s.io' &&
+         object.roleRef.kind == 'Role' &&
+         object.roleRef.name == object.metadata.name &&
+         object.subjects.size() == 1 &&
+         (('deploydock.io/user' in object.metadata.labels &&
+           object.metadata.name == 'deploydock-member-' + object.metadata.labels['deploydock.io/user'] &&
+           object.subjects[0].apiGroup == 'rbac.authorization.k8s.io' &&
+           object.subjects[0].kind == 'User' &&
+           object.subjects[0].name == 'deploydock:' + object.metadata.labels['deploydock.io/user']) ||
+          (object.metadata.name == 'deploydock-custom-resource-proxy' &&
+           'deploydock.io/component' in object.metadata.labels &&
+           object.metadata.labels['deploydock.io/component'] == 'custom-resource-proxy' &&
+           object.subjects[0].apiGroup == '' &&
+           object.subjects[0].kind == 'ServiceAccount' &&
+           object.subjects[0].name == 'deploydock' &&
+           object.subjects[0].namespace == 'deploydock-system')))
+      message: DeployDock RoleBindings must bind a matching user or its custom-resource proxy.
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: deploydock-managed-rolebinding-guard
+spec:
+  policyName: deploydock-managed-rolebinding-guard
+  validationActions: [Deny]

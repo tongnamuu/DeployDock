@@ -1,0 +1,62 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: deploydockpermissionpolicies.deploydock.io
+spec:
+  group: deploydock.io
+  scope: Namespaced
+  names:
+    plural: deploydockpermissionpolicies
+    singular: deploydockpermissionpolicy
+    kind: DeployDockPermissionPolicy
+    shortNames:
+      - ddpolicy
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          required:
+            - spec
+          properties:
+            spec:
+              type: object
+              required:
+                - customResources
+              properties:
+                customResources:
+                  type: array
+                  x-kubernetes-list-type: map
+                  x-kubernetes-list-map-keys:
+                    - crdName
+                  items:
+                    type: object
+                    required:
+                      - crdName
+                      - apiGroup
+                      - resource
+                      - displayName
+                      - allowedVerbs
+                    properties:
+                      crdName:
+                        type: string
+                        minLength: 1
+                      apiGroup:
+                        type: string
+                        minLength: 1
+                      resource:
+                        type: string
+                        minLength: 1
+                      displayName:
+                        type: string
+                        minLength: 1
+                        maxLength: 80
+                      allowedVerbs:
+                        type: array
+                        minItems: 1
+                        x-kubernetes-list-type: set
+                        items:
+                          type: string
+                          enum: [get, list, watch, create, update, patch, delete]

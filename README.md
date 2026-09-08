@@ -8,6 +8,11 @@ The local web console is available at `http://localhost:8080`. It is served as
 static HTML, CSS, and JavaScript; every account and namespace operation uses the
 JSON API, and the server has no template-rendering controller.
 
+- `/admin/crds.html`: administrator-only CRD catalog management. The page is a
+  static shell; its API requests still require administrator authorization.
+- `/custom-resources.html`: creates a registered custom resource when the
+  signed-in user has `create` RBAC permission for that CRD and namespace.
+
 ## Cluster resources
 
 Install the CRD and the service account permissions:
@@ -37,8 +42,11 @@ By default, a namespace is visible when the user can `list` core `pods` in that
 namespace. Change `deploydock.kubernetes.namespace-access-group`, `resource`, and
 `verb` to use a different access signal.
 
-The service account can list namespaces and create `SubjectAccessReview` objects,
-but the API response only includes namespaces allowed for the authenticated user.
+The service account can list namespaces, create `SubjectAccessReview` objects,
+and manage DeployDock-owned member Roles and RoleBindings. The accompanying
+`ValidatingAdmissionPolicy` rejects any service-account attempt to manage an
+unowned RBAC object or grant a resource or verb outside the application catalog.
+The API response only includes namespaces allowed for the authenticated user.
 
 ## Run
 
@@ -88,3 +96,77 @@ curl -i http://localhost:8080/api/namespaces \
   -H 'Content-Type: application/json' \
   -d '{"name":"team-a"}'
 ```
+
+List DeployDock users and the permission catalog with an authorized admin token:
+
+```shell
+curl http://localhost:8080/api/admin/users \
+  -H "Authorization: Bearer $ADMIN_ACCESS_TOKEN"
+
+curl http://localhost:8080/api/admin/permission-catalog \
+  -H "Authorization: Bearer $ADMIN_ACCESS_TOKEN"
+```
+
+Register an installed namespace-scoped CRD in the permission catalog:
+
+```shell
+curl -X PUT \
+  http://localhost:8080/api/admin/permission-catalog/custom-resources/widgets.example.com \
+  -H "Authorization: Bearer $ADMIN_ACCESS_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"displayName":"Widgets","allowedVerbs":["get","list","watch","create","update","patch","delete"]}'
+
+curl http://localhost:8080/api/admin/permission-catalog/custom-resources \
+  -H "Authorization: Bearer $ADMIN_ACCESS_TOKEN"
+
+curl -X DELETE \
+  http://localhost:8080/api/admin/permission-catalog/custom-resources/widgets.example.com \
+  -H "Authorization: Bearer $ADMIN_ACCESS_TOKEN"
+```
+
+Registration verifies that the CRD exists, is established, and has
+`spec.scope: Namespaced`. DeployDock control CRDs cannot be registered. A
+registration cannot be removed while a managed Role still grants that custom
+resource; revoke or replace those member permissions first.
+
+List the registered custom resources that the current user can create, then
+create one from a JSON `spec`:
+
+```shell
+curl http://localhost:8080/api/custom-resources/creatable \
+  -H "Authorization: Bearer $ACCESS_TOKEN"
+
+curl -X POST \
+  http://localhost:8080/api/custom-resources/team-a/widgets.example.com \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"example-widget","spec":{"message":"hello"}}'
+```
+
+The create endpoint performs a Kubernetes `SubjectAccessReview` for the JWT
+principal on every request. DeployDock also maintains a namespace-scoped proxy
+Role for its own service account containing only the registered CRDs for which
+managed members have `create`; it never grants access to Namespace objects or
+unregistered resources.
+
+Replace a member's permissions in one namespace, inspect the namespace mapping,
+and revoke it:
+
+```shell
+curl -X PUT http://localhost:8080/api/admin/namespaces/team-a/members/alice \
+  -H "Authorization: Bearer $ADMIN_ACCESS_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"permissions":[{"apiGroup":"","resource":"pods","verbs":["get","list"]},{"apiGroup":"apps","resource":"deployments","verbs":["get","create","update","patch","delete"]}]}'
+
+curl http://localhost:8080/api/admin/namespaces/team-a/members \
+  -H "Authorization: Bearer $ADMIN_ACCESS_TOKEN"
+
+curl -X DELETE http://localhost:8080/api/admin/namespaces/team-a/members/alice \
+  -H "Authorization: Bearer $ADMIN_ACCESS_TOKEN"
+```
+
+Permission replacement is allowlist-based. Kubernetes system namespaces,
+Namespace objects, cluster-scoped resources, and Kubernetes RBAC resources
+cannot be granted. Workload creation
+and Secret access can still be security-sensitive within the selected namespace,
+so grant only the verbs each member needs.
