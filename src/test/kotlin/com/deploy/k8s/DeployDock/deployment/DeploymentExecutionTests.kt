@@ -100,20 +100,11 @@ class DeploymentExecutionTests {
         assertEquals("web", store.get(app.id).application.activeDeployment)
         assertEquals(mapOf("app" to "web"), activeSelector())
         assertEquals("example/web:v2", client.apps().deployments().inNamespace("team-a").withName("web").get().spec.template.spec.containers.single().image)
-        service.action(principal, app.id, run.id, DeploymentAction.ROLLBACK).block()
-        tick(app, run)
-        ready(name)
-        tick(app, run)
-        endpoints("web", name)
-        tick(app, run, 2)
-        ready("web")
-        tick(app, run)
-        endpoints("web", "web")
-        tick(app, run)
-        assertEquals(DeploymentRunStatus.ROLLED_BACK, current(app, run).status)
+        assertFailsWith<DeploymentValidationException> { service.action(principal, app.id, run.id, DeploymentAction.ROLLBACK).block() }
+        assertEquals(DeploymentRunStatus.SUCCEEDED, current(app, run).status)
         assertEquals(mapOf("app" to "web"), activeSelector())
         assertEquals(0, client.apps().deployments().inNamespace("team-a").withName(name).get().spec.replicas)
-        assertEquals("example/web:v1", client.apps().deployments().inNamespace("team-a").withName("web").get().spec.template.spec.containers.single().image)
+        assertEquals("example/web:v2", client.apps().deployments().inNamespace("team-a").withName("web").get().spec.template.spec.containers.single().image)
     }
 
     @Test

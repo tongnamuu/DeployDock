@@ -30,7 +30,7 @@ JSON API, and the server has no template-rendering controller.
   signed-in user has `create` RBAC permission for that CRD and namespace.
 - `/deployments.html`: registers web applications, saves configurations,
   starts deployments, and displays live execution phases with approval, abort,
-  rollback, and preview connection controls. Uses the authenticated deployment API.
+  saved revision execution, and preview connection controls. Uses the authenticated deployment API.
 - `/batch.html`: separate batch configuration, deployment history, and manual Job
   execution history. Execution uses the currently deployed CronJob template.
 
@@ -199,9 +199,11 @@ so grant only the verbs each member needs.
 
 The `/api/v2/deployment-applications` endpoints register deployment targets,
 save the latest configuration, and submit runs. Each application exposes only one
-saved configuration; saving replaces it and old configuration IDs cannot start
-new runs. Each run retains its original immutable configuration for history and
-rollback. Requests are authenticated with
+saved current configuration; saving replaces it. Web applications also retain an
+immutable revision catalog (`GET /{id}/revisions`), including unexecuted revisions.
+Selecting an older revision submits a new run without changing the latest settings
+or previous runs. Web ROLLBACK requests are rejected; abort/failure recovery remains.
+Batch deployments still accept only the latest configuration. Requests are authenticated with
 the same JWT subject and are limited to namespaces visible to that principal.
 Runs return `202` with a persisted execution ID. A reconciler changes Kubernetes
 resources and checks readiness before reporting success. Configurations, runs,

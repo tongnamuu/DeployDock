@@ -23,7 +23,7 @@ class StandaloneDeploymentTests {
     lateinit var kubernetes: KubernetesClient
 
     @Test
-    fun `saving replaces the sole deployable configuration and rejects stale submissions`() {
+    fun `saving keeps one current configuration and preserves unexecuted web revisions`() {
         val store = MemoryStore()
         val api = DeploymentClient(store, KubernetesDeploymentWorkloads(kubernetes))
         val app = api.registerApplication("client", RegisterApplicationRequest("web", "team-a", ApplicationKind.WEB))
@@ -32,15 +32,14 @@ class StandaloneDeploymentTests {
         assertEquals(2, latest.revision)
         assertEquals(listOf(latest), api.configurations(app.id))
         assertEquals(listOf(latest), store.get(app.id).configurations)
-        assertFailsWith<DeploymentConflictException> {
-            api.submitRun("client", app.id, SubmitDeploymentRunRequest(old.id, "stale-release"))
-        }
+        assertEquals(listOf(latest, old), api.revisions(app.id))
         assertTrue(api.runs(app.id).isEmpty())
-        assertEquals(latest, api.submitRun("client", app.id, SubmitDeploymentRunRequest(latest.id, "current-release")).configuration)
+        assertEquals(old, api.submitRun("client", app.id, SubmitDeploymentRunRequest(old.id, "historical-release")).configuration)
+        assertEquals(listOf(latest), api.configurations(app.id))
     }
 
     @Test
-    fun `new configuration cannot change active execution or rollback and retries remain idempotent`() {
+    fun `new configuration cannot change active execution and web rollback is rejected`() {
         seed()
         val store = KubernetesDeploymentStore(kubernetes, "team-a")
         val workloads = KubernetesDeploymentWorkloads(kubernetes)
@@ -58,12 +57,9 @@ class StandaloneDeploymentTests {
         ready("web")
         assertTrue(reconciler.reconcile(app.id, run.id))
         assertEquals("example/web:v2", kubernetes.apps().deployments().inNamespace("team-a").withName("web").get().spec.template.spec.containers.single().image)
-        api.action("client", app.id, run.id, DeploymentAction.ROLLBACK, "rollback")
-        reconciler.reconcile(app.id, run.id)
-        ready("web")
-        assertTrue(reconciler.reconcile(app.id, run.id))
-        assertEquals(DeploymentRunStatus.ROLLED_BACK, api.runs(app.id).single().status)
-        assertEquals("example/web:v1", kubernetes.apps().deployments().inNamespace("team-a").withName("web").get().spec.template.spec.containers.single().image)
+        assertFailsWith<DeploymentValidationException> { api.action("client", app.id, run.id, DeploymentAction.ROLLBACK, "rollback") }
+        assertEquals(DeploymentRunStatus.SUCCEEDED, api.runs(app.id).single().status)
+        assertEquals("example/web:v2", kubernetes.apps().deployments().inNamespace("team-a").withName("web").get().spec.template.spec.containers.single().image)
         assertEquals(listOf(latest), api.configurations(app.id))
     }
 
@@ -140,7 +136,7 @@ class StandaloneDeploymentTests {
 
     @ParameterizedTest
     @ValueSource(strings = ["none", "nginx", "cilium"])
-    fun `preview canary promotes and rolls back without reading or changing ingress`(ingressClass: String) {
+    fun `preview canary promotes and rejects web rollback without changing ingress`(ingressClass: String) {
         val ingress = if (ingressClass == "none") null else kubernetes.network().v1().ingresses().inNamespace("team-a")
             .resource(IngressBuilder().withNewMetadata().withName("web").endMetadata().withNewSpec()
                 .withIngressClassName(ingressClass).withNewDefaultBackend().withNewService().withName("web")
@@ -175,17 +171,9 @@ class StandaloneDeploymentTests {
         assertEquals(deploymentUid, kubernetes.apps().deployments().inNamespace("team-a").withName("web").get().metadata.uid)
         assertEquals(serviceUid, kubernetes.services().inNamespace("team-a").withName("web").get().metadata.uid)
         assertEquals(mapOf("app" to "web"), activeSelector())
-        f.action(DeploymentAction.ROLLBACK)
-        f.tick()
-        ready(name)
-        endpoints("web", name)
-        f.tick(2)
-        ready("web")
-        f.tick()
-        endpoints("web", "web")
-        f.tick()
-        assertEquals(DeploymentRunStatus.ROLLED_BACK, f.current().status)
-        assertEquals("example/web:v1", kubernetes.apps().deployments().inNamespace("team-a").withName("web").get().spec.template.spec.containers.single().image)
+        assertFailsWith<DeploymentValidationException> { f.action(DeploymentAction.ROLLBACK) }
+        assertEquals(DeploymentRunStatus.SUCCEEDED, f.current().status)
+        assertEquals("example/web:v2", kubernetes.apps().deployments().inNamespace("team-a").withName("web").get().spec.template.spec.containers.single().image)
         assertEquals(0, kubernetes.apps().deployments().inNamespace("team-a").withName(name).get().spec.replicas)
         assertEquals(mapOf("app" to "web"), activeSelector())
         assertEquals(ingress, kubernetes.network().v1().ingresses().inNamespace("team-a").withName("web").get())
@@ -281,6 +269,88 @@ class StandaloneDeploymentTests {
         assertEquals(CanaryTrafficMode.WEIGHTED, api.runs(app.id).single().result?.trafficMode)
         val mapper = deploymentMapper()
         assertEquals(store.get(app.id), mapper.readValue(mapper.writeValueAsBytes(store.get(app.id)), DeploymentRecord::class.java))
+    }
+
+    @Test
+    fun `historical revision creates a new deployment with a fresh snapshot and unchanged latest settings`() {
+        seed()
+        val store = KubernetesDeploymentStore(kubernetes, "team-a")
+        val workloads = KubernetesDeploymentWorkloads(kubernetes)
+        val api = DeploymentClient(store, workloads)
+        val app = api.registerApplication("client", RegisterApplicationRequest("web", "team-a", ApplicationKind.WEB))
+        val old = api.saveConfiguration("client", app.id, SaveDeploymentConfigurationRequest("example/web:v1", webStrategy = WebDeploymentStrategy.ROLLING))
+        val latest = api.saveConfiguration("client", app.id, SaveDeploymentConfigurationRequest("example/web:v2", webStrategy = WebDeploymentStrategy.ROLLING))
+        val first = api.submitRun("client", app.id, SubmitDeploymentRunRequest(latest.id, "first"))
+        val reconciler = DeploymentReconciler(store, workloads, Clock.systemUTC())
+        repeat(2) { reconciler.reconcile(app.id, first.id) }
+        ready("web")
+        assertTrue(reconciler.reconcile(app.id, first.id))
+        val finished = api.runs(app.id).single()
+        val restarted = DeploymentClient(KubernetesDeploymentStore(kubernetes, "team-a"), workloads)
+        val request = SubmitDeploymentRunRequest(old.id, "redeploy")
+        val second = restarted.submitRun("another-user", app.id, request)
+        assertFalse(second.id == first.id)
+        assertNull(second.snapshot)
+        assertFalse(second.rollbackRequested)
+        assertEquals(old, second.configuration)
+        assertEquals("another-user", second.requestedBy)
+        assertEquals(second.id, restarted.submitRun("another-user", app.id, request).id)
+        assertFailsWith<DeploymentConflictException> { restarted.submitRun("client", app.id, request.copy(requestId = "concurrent")) }
+        assertFailsWith<DeploymentConflictException> { restarted.submitRun("client", app.id, request.copy(configurationId = latest.id)) }
+        reconciler.reconcile(app.id, second.id)
+        assertEquals("example/web:v2", api.runs(app.id).last().snapshot?.deployment?.spec?.template?.spec?.containers?.single()?.image)
+        reconciler.reconcile(app.id, second.id)
+        ready("web")
+        assertTrue(reconciler.reconcile(app.id, second.id))
+        assertEquals("example/web:v1", kubernetes.apps().deployments().inNamespace("team-a").withName("web").get().spec.template.spec.containers.single().image)
+        assertEquals(finished, api.runs(app.id).first())
+        assertEquals(DeploymentRunStatus.SUCCEEDED, api.runs(app.id).last().status)
+        assertEquals(listOf(latest), api.configurations(app.id))
+        assertEquals(listOf(latest, old), restarted.revisions(app.id))
+        assertFailsWith<DeploymentConfigurationNotFoundException> { api.submitRun("client", app.id, SubmitDeploymentRunRequest("unknown", "unknown")) }
+        val denied = DeploymentClient(store, KubernetesDeploymentWorkloads(kubernetes, authorization = DeploymentAuthorization { _, _, _ -> throw DeploymentForbiddenException() }))
+        assertFailsWith<DeploymentForbiddenException> { denied.submitRun("client", app.id, SubmitDeploymentRunRequest(old.id, "denied")) }
+        assertEquals(2, api.runs(app.id).size)
+    }
+
+    @Test
+    fun `legacy revisions are recovered from run settings and kept on the next save`() {
+        val store = MemoryStore()
+        val api = DeploymentClient(store, KubernetesDeploymentWorkloads(kubernetes))
+        val app = api.registerApplication("client", RegisterApplicationRequest("web", "team-a", ApplicationKind.WEB))
+        val old = api.saveConfiguration("client", app.id, SaveDeploymentConfigurationRequest("example/web:v1", webStrategy = WebDeploymentStrategy.ROLLING))
+        val run = api.submitRun("client", app.id, SubmitDeploymentRunRequest(old.id, "first"))
+        val latest = api.saveConfiguration("client", app.id, SaveDeploymentConfigurationRequest("example/web:v2", webStrategy = WebDeploymentStrategy.ROLLING))
+        store.update(app.id) { it.copy(revisions = emptyList(), runs = listOf(run.copy(status = DeploymentRunStatus.SUCCEEDED))) }
+        assertEquals(listOf(latest, old), api.revisions(app.id))
+        val saved = api.saveConfiguration("client", app.id, SaveDeploymentConfigurationRequest("example/web:v3", webStrategy = WebDeploymentStrategy.ROLLING))
+        assertEquals(listOf(saved, latest, old), api.revisions(app.id))
+        assertEquals(old, api.submitRun("client", app.id, SubmitDeploymentRunRequest(old.id, "legacy-redeploy")).configuration)
+        val other = api.registerApplication("client", RegisterApplicationRequest("other", "team-a", ApplicationKind.WEB))
+        assertFailsWith<DeploymentConfigurationNotFoundException> { api.submitRun("client", other.id, SubmitDeploymentRunRequest(old.id, "foreign")) }
+    }
+
+    @Test
+    fun `batch configuration remains latest only and cannot use web revision API`() {
+        val api = DeploymentClient(MemoryStore(), KubernetesDeploymentWorkloads(kubernetes))
+        val app = api.registerApplication("client", RegisterApplicationRequest("batch", "team-a", ApplicationKind.BATCH))
+        val old = api.saveConfiguration("client", app.id, SaveDeploymentConfigurationRequest("example/batch:v1", batchMode = BatchDeploymentMode.INDIVIDUAL))
+        api.saveConfiguration("client", app.id, SaveDeploymentConfigurationRequest("example/batch:v2", batchMode = BatchDeploymentMode.INDIVIDUAL))
+        assertFailsWith<DeploymentConflictException> { api.submitRun("client", app.id, SubmitDeploymentRunRequest(old.id, "old")) }
+        assertFailsWith<DeploymentValidationException> { api.revisions(app.id) }
+    }
+
+    @Test
+    fun `historical revision must still have its traffic adapter available`() {
+        val store = MemoryStore()
+        val api = DeploymentClient(store, KubernetesDeploymentWorkloads(kubernetes, listOf(RecordingTrafficAdapter())))
+        val app = api.registerApplication("client", RegisterApplicationRequest("web", "team-a", ApplicationKind.WEB))
+        val old = api.saveConfiguration("client", app.id, SaveDeploymentConfigurationRequest("example/web:v1", webStrategy = WebDeploymentStrategy.CANARY,
+            trafficAdapter = RecordingTrafficAdapter().id, trafficOptions = mapOf("route" to "web")))
+        api.saveConfiguration("client", app.id, SaveDeploymentConfigurationRequest("example/web:v2", webStrategy = WebDeploymentStrategy.ROLLING))
+        val noAdapter = DeploymentClient(store, KubernetesDeploymentWorkloads(kubernetes))
+        assertFailsWith<DeploymentValidationException> { noAdapter.submitRun("client", app.id, SubmitDeploymentRunRequest(old.id, "old")) }
+        assertTrue(api.runs(app.id).isEmpty())
     }
 
     private fun nativeCanary(adapters: List<CanaryTrafficAdapter> = emptyList()): NativeCanary {

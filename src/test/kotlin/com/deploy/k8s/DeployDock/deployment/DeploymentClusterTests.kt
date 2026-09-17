@@ -29,7 +29,7 @@ import kotlin.test.assertTrue
 @EnabledIfEnvironmentVariable(named = "DEPLOYDOCK_E2E_KUBECONFIG", matches = ".+")
 class DeploymentClusterTests {
     @Test
-    fun `existing Deployment supports real preview HTTP promotion and rollback`() {
+    fun `existing Deployment supports preview promotion and redeployment of a saved revision`() {
         val config = Config.fromKubeconfig(Files.readString(Path.of(System.getenv("DEPLOYDOCK_E2E_KUBECONFIG"))))
         check(config.currentContext?.name == "kind-deploydock-dev") { "E2E is restricted to the repository Kind cluster" }
         val namespace = "dd-rollout-e2e-${UUID.randomUUID().toString().take(8)}"
@@ -62,18 +62,19 @@ class DeploymentClusterTests {
                 val orchestrators = DeploymentRunOrchestrators(store, reconciler, null, DeployDockTemporalProperties())
                 val service = KubernetesDeploymentService(namespaces, store, orchestrators, workloads, Clock.systemUTC())
                 val app = service.registerApplication(principal, RegisterApplicationRequest("web", namespace, ApplicationKind.WEB)).block()!!
+                val baseline = service.saveConfiguration(principal, app.id, SaveDeploymentConfigurationRequest("nginx:1.27-alpine", webStrategy = WebDeploymentStrategy.ROLLING)).block()!!
                 val saved = service.saveConfiguration(principal, app.id, SaveDeploymentConfigurationRequest("nginx:1.28-alpine", webStrategy = WebDeploymentStrategy.BLUE_GREEN)).block()!!
-                val run = service.submitRun(principal, app.id, SubmitDeploymentRunRequest(saved.id, "e2e")).block()!!
+                var run = service.submitRun(principal, app.id, SubmitDeploymentRunRequest(saved.id, "e2e")).block()!!
                 fun waitFor(status: DeploymentRunStatus): DeploymentRun {
                     val deadline = Instant.now().plusSeconds(180)
                     while (Instant.now().isBefore(deadline)) {
                         reconciler.reconcile(app.id, run.id)
-                        val current = store.get(app.id).runs.single()
+                        val current = store.get(app.id).runs.first { it.id == run.id }
                         if (current.status == status) return current
                         check(!current.terminal()) { "unexpected status: ${current.status}: ${current.error}" }
                         Thread.sleep(1000)
                     }
-                    error("Timed out waiting for $status: ${store.get(app.id).runs.single()}")
+                    error("Timed out waiting for $status: ${store.get(app.id).runs.first { it.id == run.id }}")
                 }
                 fun assertVersion(serviceName: String, version: String) {
                     client.services().inNamespace(namespace).withName(serviceName).portForward(80).use { forward ->
@@ -92,9 +93,11 @@ class DeploymentClusterTests {
                 waitFor(DeploymentRunStatus.SUCCEEDED)
                 assertVersion("web", "1.28")
                 assertEquals(originalUid, client.apps().deployments().inNamespace(namespace).withName("web").get().metadata.uid)
-                service.action(principal, app.id, run.id, DeploymentAction.ROLLBACK).block()
-                waitFor(DeploymentRunStatus.ROLLED_BACK)
+                run = service.submitRun(principal, app.id, SubmitDeploymentRunRequest(baseline.id, "e2e-revision")).block()!!
+                waitFor(DeploymentRunStatus.SUCCEEDED)
                 assertVersion("web", "1.27")
+                assertEquals(2, service.runs(principal, app.id).block()!!.size)
+                assertEquals(saved.id, service.configurations(principal, app.id).block()!!.single().id)
             } finally {
                 client.namespaces().withName(namespace).delete()
             }

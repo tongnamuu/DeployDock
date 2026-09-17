@@ -20,6 +20,7 @@ const runs = new Map([
     ["app-billing", []],
 ]);
 const ids = new Map();
+const revisions = new Map(apps.filter((app) => app.kind === "WEB").map((app) => [app.id, [...configurations.get(app.id)]]));
 const executions = new Map(apps.map((app) => [app.id, []]));
 const templates = new Map([["app-billing", ["settlement", "invoice"].map((name) => ({ name, images: { main: "registry.example.com/billing:v3" } }))]]);
 if (process.env.UI_PREVIEW_STATE) {
@@ -30,6 +31,8 @@ if (process.env.UI_PREVIEW_STATE) {
         const previous = saved.configurations[app.id] || [];
         runs.set(app.id, (saved.runs[app.id] || []).map((run) => ({ ...run, configuration: run.configuration || previous.find((config) => config.id === run.configurationId) })));
         configurations.set(app.id, previous.slice(-1));
+        if (app.kind === "WEB") revisions.set(app.id, [...new Map([...(saved.revisions?.[app.id] || []), ...previous,
+            ...runs.get(app.id).map((run) => run.configuration).filter(Boolean)].map((config) => [config.id, config])).values()]);
         executions.set(app.id, saved.executions?.[app.id] || []);
         if (saved.templates?.[app.id]) templates.set(app.id, saved.templates[app.id]);
     }
@@ -63,14 +66,16 @@ async function handle(request, response) {
         if (request.method === "GET") return send(response, 200, apps);
         if (apps.some((app) => app.name === body.name && app.namespace === body.namespace)) return send(response, 409, { message: "이미 등록된 앱입니다." });
         const app = { ...body, id: `app-${randomUUID()}`, createdAt: timestamp(), createdBy: "ui-preview" };
-        apps.push(app); configurations.set(app.id, []); runs.set(app.id, []); executions.set(app.id, []);
+        apps.push(app); configurations.set(app.id, []); runs.set(app.id, []); executions.set(app.id, []); revisions.set(app.id, []);
         return send(response, 201, app);
     }
-    const match = url.pathname.match(/^\/api\/v2\/deployment-applications\/([^/]+)\/(configurations|runs|executions|execution-targets)(?:\/([^/]+)\/actions)?$/);
+    const match = url.pathname.match(/^\/api\/v2\/deployment-applications\/([^/]+)\/(configurations|revisions|runs|executions|execution-targets)(?:\/([^/]+)\/actions)?$/);
     if (!match) return send(response, 404, { message: "Not found" });
     const [, id, collection, runId] = match;
     const app = apps.find((app) => app.id === id);
     if (!app) return send(response, 404, { message: "App not found" });
+    if (collection === "revisions") return send(response, app.kind === "WEB" ? 200 : 400,
+        app.kind === "WEB" ? [...(revisions.get(id) || [])].sort((a, b) => b.revision - a.revision) : { message: "웹 앱만 리비전 배포를 지원합니다." });
     if (["executions", "execution-targets"].includes(collection)) {
         if (app.kind !== "BATCH") return send(response, 400, { message: "배치 앱만 실행할 수 있습니다." });
         const history = executions.get(id) || [];
@@ -95,12 +100,13 @@ async function handle(request, response) {
     if (collection === "configurations") {
         const config = { ...body, id: `cfg-${randomUUID()}`, applicationId: id, revision: (records.at(-1)?.revision || 0) + 1, batchTargets: body.batchTargets || [], canarySteps: body.canarySteps || [10, 50], savedBy: "ui-preview", savedAt: timestamp() };
         runs.get(id).forEach((run) => { run.configuration ||= records.find((value) => value.id === run.configurationId); });
+        if (app.kind === "WEB") revisions.set(id, [...(revisions.get(id) || []), config]);
         configurations.set(id, [config]); return send(response, 201, config);
     }
     if (!runId) {
         if (records.some((run) => !terminal(run))) return send(response, 409, { message: "진행 중인 배포가 있습니다." });
-        const config = configurations.get(id).at(-1);
-        if (!config || config.id !== body.configurationId) return send(response, 409, { message: "최신 설정만 배포할 수 있습니다." });
+        const config = app.kind === "WEB" ? revisions.get(id)?.find((item) => item.id === body.configurationId) : configurations.get(id).at(-1);
+        if (!config || config.id !== body.configurationId) return send(response, 409, { message: "배포할 리비전이 없습니다." });
         const run = { ...body, id: `run-${randomUUID()}`, applicationId: id, kind: app.kind, orchestrator: app.orchestrator, webStrategy: config.webStrategy, batchMode: config.batchMode, status: "RUNNING", phase: "WAIT_READY", step: -1, requestedBy: "ui-preview", requestedAt: timestamp() };
         if (app.kind === "WEB" && config.webStrategy !== "ROLLING") run.result = { previewService: `${app.name}-preview`, previewPorts: [80], canaryWeight: 0, trafficMode: config.trafficAdapter ? "WEIGHTED" : config.webStrategy === "CANARY" ? "PREVIEW_ONLY" : null };
         run.configuration = config;
@@ -113,6 +119,7 @@ async function handle(request, response) {
     const run = records.find((run) => run.id === runId);
     if (!run) return send(response, 404, { message: "Run not found" });
     const config = run.configuration || configurations.get(id).find((config) => config.id === run.configurationId);
+    if (app.kind === "WEB" && body.action === "ROLLBACK") return send(response, 400, { message: "웹 롤백은 지원하지 않습니다. 리비전을 선택해 새 배포를 실행하세요." });
     if (body.action === "ADVANCE") {
         if (run.status !== "AWAITING_APPROVAL" || !config.trafficAdapter || run.step + 1 >= config.canarySteps.length) return send(response, 409, { message: "진행할 단계가 없습니다." });
         run.step++; run.status = "RUNNING"; run.phase = "ROUTE"; run.result.canaryWeight = config.canarySteps[run.step];

@@ -12,6 +12,7 @@ interface DeploymentProvider {
     fun applications(principal: String): Mono<List<DeploymentApplication>>
     fun saveConfiguration(principal: String, applicationId: String, request: SaveDeploymentConfigurationRequest): Mono<DeploymentConfiguration>
     fun configurations(principal: String, applicationId: String): Mono<List<DeploymentConfiguration>>
+    fun revisions(principal: String, applicationId: String): Mono<List<DeploymentConfiguration>>
     fun submitRun(principal: String, applicationId: String, request: SubmitDeploymentRunRequest): Mono<DeploymentRun>
     fun runs(principal: String, applicationId: String): Mono<List<DeploymentRun>>
     fun action(principal: String, applicationId: String, runId: String, action: DeploymentAction, requestId: String = UUID.randomUUID().toString()): Mono<DeploymentRun>
@@ -41,6 +42,9 @@ class KubernetesDeploymentService(
 
     override fun configurations(principal: String, applicationId: String): Mono<List<DeploymentConfiguration>> =
         authorized(principal, applicationId) { client.configurations(applicationId) }
+
+    override fun revisions(principal: String, applicationId: String): Mono<List<DeploymentConfiguration>> =
+        authorized(principal, applicationId) { client.revisions(applicationId) }
 
     override fun submitRun(principal: String, applicationId: String, request: SubmitDeploymentRunRequest): Mono<DeploymentRun> =
         authorized(principal, applicationId) { client.submitRun(principal, applicationId, request) }

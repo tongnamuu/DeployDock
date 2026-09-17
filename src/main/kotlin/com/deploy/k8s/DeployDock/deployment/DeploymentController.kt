@@ -55,6 +55,10 @@ class DeploymentController(
     ): Mono<List<DeploymentConfiguration>> =
         deployments.configurations(requireNotNull(jwt.subject), applicationId)
 
+    @GetMapping("/{applicationId}/revisions")
+    fun revisions(@AuthenticationPrincipal jwt: Jwt, @PathVariable applicationId: String): Mono<List<DeploymentConfiguration>> =
+        deployments.revisions(requireNotNull(jwt.subject), applicationId)
+
     @PostMapping("/{applicationId}/runs")
     @ResponseStatus(HttpStatus.ACCEPTED)
     fun submitRun(

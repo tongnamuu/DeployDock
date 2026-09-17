@@ -9,7 +9,7 @@ const terminal = new Set(["SUCCEEDED", "FAILED", "ABORTED", "ROLLED_BACK"]);
 const statuses = { QUEUED: "대기", RUNNING: "배포 중", AWAITING_APPROVAL: "승인 대기", PROMOTING: "전환 중", ABORTING: "복구 중", SUCCEEDED: "성공", FAILED: "실패", ABORTED: "중단 완료", ROLLED_BACK: "롤백 완료" };
 const strategies = { ROLLING: "롤링", BLUE_GREEN: "블루그린", CANARY: "카나리", GROUPED: "그룹 배치", INDIVIDUAL: "개별 배치" };
 const phases = { PREPARE: "원본 상태 저장", APPLY: "신규 버전 적용", WAIT_READY: "Pod 준비 확인", APPROVAL: "검증 및 승인", ROUTE: "가중치 반영 확인", SWITCH: "운영 Service 전환", SWITCH_WAIT: "EndpointSlice 반영 확인", UPDATE_SOURCE: "원본 Deployment 갱신", SOURCE_READY: "원본 Pod 준비 확인", SOURCE_TRAFFIC: "원본 Service 복귀 확인", ROLLBACK_PREVIEW: "롤백 준비", RESTORE: "원본 복원", RESTORE_WAIT: "복원 결과 확인" };
-const state = { apps: [], namespaces: [], configs: [], runs: [], executions: [], targets: [], executionFresh: false, appId: null, runId: null, capabilities: null, busy: false, fresh: false, authenticated: false };
+const state = { apps: [], namespaces: [], configs: [], revisions: [], runs: [], executions: [], targets: [], executionFresh: false, appId: null, runId: null, capabilities: null, busy: false, fresh: false, authenticated: false };
 let executionVersion = 0;
 let detailVersion = 0;
 let initializationVersion = 0;
@@ -173,7 +173,7 @@ async function selectApp(id, reset = true) {
     if (changed) {
         executionVersion++;
         state.executions = []; state.targets = []; state.executionFresh = false;
-        state.configs = []; state.runs = []; state.runId = null; state.fresh = false;
+        state.configs = []; state.revisions = []; state.runs = []; state.runId = null; state.fresh = false;
         $("#configuration-form").reset();
     }
     renderApps();
@@ -188,6 +188,7 @@ async function selectApp(id, reset = true) {
     $("#run-traffic").parentElement.hidden = batchPage;
     if (batchPage) renderExecutions();
     renderRuns(); renderConfigurations();
+    if (!batchPage) renderRevisions();
     if (reset) showTab("runs");
     await loadDetail();
     if (batchPage) await loadExecutions();
@@ -198,11 +199,12 @@ async function loadDetail() {
     const id = state.appId;
     const version = ++detailVersion;
     try {
-        const [configs, runs] = await Promise.all([api(path("/configurations")), api(path("/runs"))]);
+        const [configs, runs, revisions] = await Promise.all([api(path("/configurations")), api(path("/runs")), batchPage ? [] : api(path("/revisions"))]);
         if (version !== detailVersion || id !== state.appId || !state.authenticated) return;
-        state.configs = configs; state.runs = runs; state.fresh = true;
+        state.configs = configs; state.runs = runs; state.revisions = revisions; state.fresh = true;
         if (!runs.some((run) => run.id === state.runId)) state.runId = runs.at(-1)?.id || null;
         renderRuns(); renderConfigurations();
+        if (!batchPage) renderRevisions();
         $("#connection").textContent = `갱신 ${new Date().toLocaleTimeString("ko-KR", { hour12: false })}`;
         message("#page-error", "");
     } catch (error) {
@@ -310,7 +312,7 @@ function renderActions() {
         if (weighted(config) && run.step + 1 < config.canarySteps.length) actions.push(["ADVANCE", `${config.canarySteps[run.step + 1]}% 단계 승인`, "button-primary"]);
         else actions.push(["PROMOTE", "승격 승인", "button-primary"]);
     }
-    if (run.status === "SUCCEEDED" && state.runs.at(-1)?.id === run.id && !activeRun()) actions.push(["ROLLBACK", "이전 버전으로 롤백", "button-danger"]);
+    if (batchPage && run.status === "SUCCEEDED" && state.runs.at(-1)?.id === run.id && !activeRun()) actions.push(["ROLLBACK", "이전 버전으로 롤백", "button-danger"]);
     actions.forEach(([action, label, style]) => {
         const button = node("button", label, `button ${style}`);
         button.type = "button"; button.disabled = state.busy || !state.fresh || Boolean(run.action);
@@ -320,7 +322,7 @@ function renderActions() {
 }
 
 function showTab(tab) {
-    for (const name of batchPage ? ["runs", "config", "executions"] : ["runs", "config"]) {
+    for (const name of batchPage ? ["runs", "config", "executions"] : ["runs", "revisions", "config"]) {
         $(`#${name}-tab`).setAttribute("aria-selected", String(name === tab));
         $(`#${name}-tab`).tabIndex = name === tab ? 0 : -1;
         $(`#${name}-view`).hidden = name !== tab;
@@ -368,6 +370,31 @@ function openConfirmation(title, summary, action) {
     message("#confirm-error", "");
     $("#confirm-submit").textContent = title;
     $("#confirm-dialog").showModal();
+}
+
+function renderRevisions() {
+    $("#revision-count").textContent = `${state.revisions.length}개`;
+    $("#revisions-empty").hidden = state.revisions.length > 0;
+    $("#revisions").replaceChildren(...state.revisions.map((config) => {
+        const row = node("tr");
+        const latest = state.configs.some((item) => item.id === config.id);
+        const action = node("td");
+        const button = node("button", undefined, "button button-secondary");
+        button.type = "button"; button.dataset.deploy = config.id;
+        button.append(icon("Play"), document.createTextNode("이 리비전 실행"));
+        button.disabled = state.busy || !state.fresh || activeRun();
+        button.addEventListener("click", () => {
+            const id = state.appId;
+            openConfirmation("리비전 배포 실행", `${app().namespace} / ${app().name}\nr${config.revision} · ${config.image}\n${strategies[config.webStrategy]} · ${config.replicas ? `${config.replicas} Pods` : "현재 Pod 수 유지"}`, async () => {
+                const run = await postIdempotent(`${base}/${encodeURIComponent(id)}/runs`, { configurationId: config.id }, `${id}:submit:${config.id}`);
+                state.runId = run.id; showTab("runs");
+            });
+        });
+        action.append(button);
+        row.append(node("td", `r${config.revision}${latest ? " · 최신 설정" : ""}`), node("td", config.image, "mono"),
+            node("td", `${strategies[config.webStrategy]} / ${config.replicas ?? "유지"}`), node("td", date(config.savedAt)), action);
+        return row;
+    }));
 }
 
 function confirmAction(action, label, run) {
@@ -429,7 +456,7 @@ $("#register-form").addEventListener("submit", (event) => {
         if (body.kind === "WEB" && data.get("serviceName").trim()) body.serviceName = data.get("serviceName").trim();
         const created = await api(base, { method: "POST", body: JSON.stringify(body) });
         state.appId = created.id;
-        state.configs = []; state.runs = []; state.runId = null; state.fresh = false;
+        state.configs = []; state.revisions = []; state.runs = []; state.runId = null; state.fresh = false;
         executionVersion++;
         state.executions = []; state.targets = []; state.executionFresh = false;
         $("#configuration-form").reset();
@@ -457,6 +484,7 @@ $("#namespace-filter").addEventListener("change", renderApps);
 $("#app-search").addEventListener("input", renderApps);
 $("#runs-tab").addEventListener("click", () => showTab("runs"));
 $("#config-tab").addEventListener("click", () => showTab("config"));
+if (!batchPage) $("#revisions-tab").addEventListener("click", () => showTab("revisions"));
 $(".view-tabs").addEventListener("keydown", (event) => {
     if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
     event.preventDefault();

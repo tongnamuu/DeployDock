@@ -31,6 +31,11 @@ class DeploymentClient(
         record.runs.map { it.copy(configuration = record.configurationFor(it)) }
     }
 
+    fun revisions(applicationId: String): List<DeploymentConfiguration> = store.get(applicationId).let { record ->
+        if (record.application.kind != ApplicationKind.WEB) throw DeploymentValidationException("revision deployment requires a web application")
+        record.webRevisions()
+    }
+
     fun saveConfiguration(principal: String, applicationId: String, request: SaveDeploymentConfigurationRequest): DeploymentConfiguration {
         return store.update(applicationId) { record ->
             validate(record.application, request)
@@ -41,6 +46,7 @@ class DeploymentClient(
                 request.canarySteps, request.progressDeadlineSeconds, request.trafficAdapter, request.trafficOptions)
             workloads.validateTraffic(config)
             record.copy(configurations = listOf(config),
+                revisions = if (record.application.kind == ApplicationKind.WEB) record.webRevisions() + config else record.revisions,
                 runs = record.runs.map { it.copy(configuration = record.configurationFor(it)) })
         }.configurations.last()
     }
@@ -54,11 +60,18 @@ class DeploymentClient(
                 return@update record
             }
             if (record.runs.any { !it.terminal() }) throw DeploymentConflictException("application already has an active run")
-            val config = record.configurations.maxByOrNull { it.revision }
-                ?: throw DeploymentConfigurationNotFoundException(request.configurationId)
-            if (config.id != request.configurationId) throw DeploymentConflictException("only the latest configuration can be deployed; refresh and retry")
             val app = record.application
+            val config = if (app.kind == ApplicationKind.WEB) {
+                record.webRevisions().find { it.id == request.configurationId }
+                    ?: throw DeploymentConfigurationNotFoundException(request.configurationId)
+            } else {
+                val latest = record.configurations.maxByOrNull { it.revision }
+                    ?: throw DeploymentConfigurationNotFoundException(request.configurationId)
+                if (latest.id != request.configurationId) throw DeploymentConflictException("only the latest batch configuration can be deployed; refresh and retry")
+                latest
+            }
             requireOrchestrator(app.orchestrator)
+            workloads.validateTraffic(config)
             workloads.authorize(principal, app, config)
             val id = newId("run")
             val run = DeploymentRun(id, app.id, config.id, app.kind, app.orchestrator, config.webStrategy,
@@ -74,6 +87,9 @@ class DeploymentClient(
             val run = record.runs.find { it.id == runId } ?: throw DeploymentValidationException("run does not exist")
             val config = record.configurationFor(run)
             workloads.authorize(principal, record.application, config)
+            if (record.application.kind == ApplicationKind.WEB && action == DeploymentAction.ROLLBACK) {
+                throw DeploymentValidationException("web rollback is not supported; submit a new deployment using a saved revision")
+            }
             val previous = run.actionRequests[requestId]
             if (previous != null) {
                 if (previous != action) throw DeploymentConflictException("requestId already belongs to a different action")

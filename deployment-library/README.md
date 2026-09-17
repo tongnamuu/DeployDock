@@ -33,7 +33,7 @@ Temporal, Argo Rollouts, DeployDock CRD 없이도 호출할 수 있다.
 | 기본 상태 저장 | 기존 제어 namespace와 ConfigMap 읽기·쓰기 권한 |
 
 기본 Kubernetes Service만으로 요청 비율을 10%/90%로 제어한다고 약속하지 않는다.
-어댑터 없는 환경에서도 카나리 신규 Pod 배포·preview 테스트·승격·롤백을 지원한다.
+어댑터 없는 환경에서도 카나리 신규 Pod 배포·preview 테스트·승격과 리비전 재배포를 지원한다.
 가중치 분배가 필요할 때만 어댑터를 선택한다. 명시적으로 선택한 어댑터가 없으면 설정을 거부한다.
 기본 실행기는 Ingress 종류를 판별하거나 Ingress를 조회·변경하지 않는다.
 `capabilities()`는 등록된 기능 목록이지 클러스터 권한·controller 정상 동작을 검사한 결과가 아니다.
@@ -75,9 +75,13 @@ fun main() {
 
 `DeploymentClient`는 동기 API다. 요청을 저장할 뿐 background thread를 시작하지 않는다.
 `saveConfiguration()`은 최신 설정 하나를 교체하며 `configurations()`는 0~1개만 반환한다.
-신규 실행에는 최신 설정 ID만 사용할 수 있다. 실행 당시 설정은 `DeploymentRun.configuration`에
-고정해 두므로 이후 저장과 무관하게 실행·승인·롤백한다. 이전 다중 설정 형식도 읽을 수 있으며,
+웹은 `revisions(appId)`에서 조회한 과거 설정 ID로도 새 실행을 만들 수 있다. 배치는 최신 설정 ID만 허용한다. 실행 당시 설정은 `DeploymentRun.configuration`에
+고정해 두므로 이후 저장과 무관하게 실행·승인·실패 복구한다. 이전 다중 설정 형식도 읽을 수 있으며,
 다음 저장 시 과거 실행에 해당 설정을 보존하고 저장 설정은 최신 한 개로 정리한다.
+웹 설정은 저장 때마다 별도 불변 리비전 목록에 보존한다. 과거 리비전을 선택한 `submitRun()`은
+현재 리소스를 새로 스냅샷하고 새 run을 만들며 최신 설정과 기존 이력을 변경하지 않는다.
+웹의 새 `ROLLBACK` action은 거부한다. 과거 이미지로 돌아가려면 해당 리비전 ID를 새 배포 요청에 사용한다.
+이는 전체 리소스나 DB의 과거 상태를 복원하는 기능이 아니다. 리비전의 전략에 따른 준비·승인도 다시 거친다.
 `reconcile()`은 한 단계를 진행하고 종료 상태 여부를 반환한다. `true`가 성공만을 의미하지는 않는다.
 호출자가 executor, 기존 작업 큐 또는 Temporal Activity에서 반복 호출한다. 재시작 시
 `store.list()`에서 종료되지 않은 실행을 찾아 다시 호출하면 저장된 단계부터 이어간다.
@@ -177,7 +181,7 @@ NGINX·Istio 등의 실제 어댑터는 아직 포함하지 않았다.
 ## 검증 범위
 
 독립 모듈 테스트는 Spring·Temporal·Gateway 어댑터 클래스가 classpath에 없음을 확인하고
-mock Kubernetes에서 롤링, 블루그린 preview, 기본 카나리 승인·승격·중단·실패 복구·롤백,
+mock Kubernetes에서 롤링, 블루그린 preview, 기본 카나리 승인·승격·중단·실패 복구, 웹 롤백 거부와 리비전 재배포,
 명시한 어댑터 누락 거부, 사용자 정의 어댑터·저장소를 검증한다.
 Ingress 없음 및 `nginx`·`cilium` ingressClassName 객체를 둔 테스트에서 기존 Ingress 객체 유지와
 트래픽 리소스 권한 불필요를 확인한다. 실제 NGINX·Cilium controller를 구동한 테스트는 아니다.

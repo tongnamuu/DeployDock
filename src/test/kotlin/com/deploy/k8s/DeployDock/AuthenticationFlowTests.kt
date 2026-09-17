@@ -76,6 +76,9 @@ class AuthenticationFlowTests(
         client.get().uri("/api/v2/deployment-applications/capabilities")
             .exchange().expectStatus().isUnauthorized
 
+        client.get().uri("/api/v2/deployment-applications/test/revisions")
+            .exchange().expectStatus().isUnauthorized
+
         client.get().uri("/batch.html")
             .exchange().expectStatus().isOk
             .expectBody(String::class.java)

@@ -45,6 +45,7 @@
                 <div class="application-heading"><div><h2 id="app-name"></h2><p id="app-meta"></p></div><span id="app-kind" class="badge"></span></div>
                 <div class="view-tabs" role="tablist" aria-label="배포 화면">
                     <button id="runs-tab" type="button" role="tab" aria-controls="runs-view" aria-selected="true">배포 이력</button>
+                    <button id="revisions-tab" type="button" role="tab" aria-controls="revisions-view" aria-selected="false" tabindex="-1">리비전</button>
                     <button id="config-tab" type="button" role="tab" aria-controls="config-view" aria-selected="false" tabindex="-1">배포 설정</button>
                 </div>
                 <section id="runs-view" role="tabpanel" aria-labelledby="runs-tab">
@@ -66,6 +67,11 @@
                         </div>
                         <div id="run-actions" class="run-actions"></div>
                     </section>
+                </section>
+                <section id="revisions-view" role="tabpanel" aria-labelledby="revisions-tab" hidden>
+                    <div class="section-heading"><h3>배포 리비전</h3><span id="revision-count"></span></div>
+                    <div class="table-scroll"><table><thead><tr><th>리비전</th><th>이미지</th><th>전략 / Pod</th><th>저장 시각</th><th>실행</th></tr></thead><tbody id="revisions"></tbody></table></div>
+                    <p id="revisions-empty" class="empty-state">저장된 리비전이 없습니다.</p>
                 </section>
                 <section id="config-view" role="tabpanel" aria-labelledby="config-tab" hidden>
                     <form id="configuration-form" class="configuration-form">

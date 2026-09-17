@@ -40,9 +40,10 @@ API 호출과 preview 접속 명령은 [운영 및 테스트 절차](DEPLOYMENTS
 | `DeploymentConfiguration` | 저장 시점에 고정한 배포 설정 | 이미지 `shop:v2`, 전략 `BLUE_GREEN`, revision 2 |
 | `DeploymentRun` | 특정 설정을 적용하는 한 번의 실행 | `run-...`, 승인 대기, preview 접속 정보 |
 | `DeploymentSnapshot` | 복구에 사용할 실행 전 리소스 정보 | 원본 Deployment, Service selector, HTTPRoute backend, CronJob |
-| `DeploymentRecord` | ConfigMap 하나에 들어가는 앱별 데이터 | 앱 정보 + 최신 설정 한 개 + 배포 목록 + 별도 배치 실행 목록 |
+| `DeploymentRecord` | ConfigMap 하나에 들어가는 앱별 데이터 | 앱 정보 + 최신 설정 한 개 + 웹 리비전 목록 + 배포 목록 + 별도 배치 실행 목록 |
+| `DeploymentRecord.revisions` | 웹의 불변 배포 설정 카탈로그 | 저장만 하고 미실행인 설정도 보존; 최신 설정과 별도 |
 | `BatchExecution` | 배포와 무관하게 접수한 수동 Job 한 건 | 실제 템플릿 이미지, Job UID, Pod 성공/실패 수, 완료 상태 |
-| `DeploymentRun.configuration` | 해당 실행을 시작할 때 고정한 설정 | 최신 저장 설정이 바뀌어도 실행·승인·롤백은 이 설정 사용 |
+| `DeploymentRun.configuration` | 해당 실행을 시작할 때 고정한 설정 | 최신 저장 설정이 바뀌어도 실행·승인·복구는 이 설정 사용 |
 | `status` | 사용자가 보는 실행 상태 | `RUNNING`, `AWAITING_APPROVAL`, `SUCCEEDED` |
 | `phase` | 다음 호출에서 처리할 내부 단계 | `WAIT_READY`, `SWITCH_WAIT`, `RESTORE` |
 | `action` | 접수됐지만 실행기가 아직 처리하지 않은 요청 | `ADVANCE`, `PROMOTE`, `ABORT` |
@@ -75,7 +76,7 @@ flowchart TD
 ```
 
 `submitRun()`은 먼저 같은 `requestId`가 있는지 찾는다. 같은 설정이면 기존 실행을 반환하고,
-다른 설정이면 충돌로 거부한다. 새 요청이면 활성 실행 유무, 최신 설정 ID 여부, 실행 방식,
+다른 설정이면 충돌로 거부한다. 새 요청이면 활성 실행 유무, 웹 리비전 또는 배치 최신 설정 ID 여부, 실행 방식,
 실제 배포 권한을 확인한 다음 당시 설정과 함께 `QUEUED` 실행을 저장한다. Kubernetes 배포 완료를 기다리지는
 않지만 권한 확인과 저장 요청이 끝나야 응답한다.
 
@@ -112,7 +113,7 @@ Temporal은 호출 순서·대기·Activity 재시도를 담당한다. Deploymen
 
 마지막 단계가 성공하면 `SUCCEEDED`다. 원본 Deployment를 삭제하거나 이름을 바꾸지 않으므로
 기존 리소스 이름을 사용하는 운영 작업을 유지할 수 있다. preview Deployment와 Service는
-롤백에 재사용하기 위해 남긴다.
+자동 삭제하지 않는다. 과거 리비전을 실행하면 이 리소스를 재사용하지 않고 새 실행 전용 preview를 만든다.
 
 `createPreview()`는 원본 Pod 설정을 복제하되, 원본 Deployment와 운영 Service가 공유하는
 label 값 하나를 실행 ID로 바꾼다. 신규 Deployment의 selector와 preview Service는
@@ -150,12 +151,13 @@ parent의 최신 generation에 대한 `Accepted`와 `ResolvedRefs`를 확인해�
 HTTPRoute backend를 원래 운영 Service 하나로 되돌리고 반영을 기다린다. 이후에는
 블루그린과 같은 원본 Deployment 갱신·복귀 과정을 진행한다.
 
-## 6. 실패·중단·롤백
+## 6. 실패·중단·재배포
 
-`ABORT`는 진행 중 실행을 `ABORTING / RESTORE`로 옮긴다. 마지막 실행이 성공했고 다른
-활성 실행이 없을 때만 `ROLLBACK`을 받을 수 있다. 블루그린·카나리의 성공 후 롤백은
-`ROLLBACK_PREVIEW`에서 preview를 다시 가동해 트래픽을 받은 뒤 원본을 복구한다.
-일반 롤링과 배치는 바로 `RESTORE`로 들어간다.
+`ABORT`는 진행 중 실행을 `ABORTING / RESTORE`로 옮긴다. 웹의 새 `ROLLBACK` 요청은 거부한다.
+웹에서 과거 버전을 실행하려면 `revisions()`의 configuration ID를 `submitRun()`에 전달한다.
+새 실행이므로 과거 run의 스냅샷을 재사용하지 않고 현재 상태를 다시 캡처한다. 기존 이력은 그대로다.
+배치의 기존 롤백과 이미 저장된 구버전 웹 롤백 재개는 호환한다. 이를 위해 `ROLLBACK_PREVIEW`와
+`rollbackRequested`의 구버전 상태 해석은 남겨 둔다. 새 웹 요청으로는 이 경로에 진입할 수 없다.
 
 | 코드 또는 값 | 의미 |
 |---|---|
@@ -168,7 +170,7 @@ HTTPRoute backend를 원래 운영 Service 하나로 되돌리고 반영을 기�
 
 `reconcile()` 내부 작업이 실패했을 때 스냅샷이 없으면 바로 `FAILED`가 된다.
 스냅샷이 있으면 복구 단계로 이동한다. 복구 완료 후 사용자 중단은 `ABORTED`, 배포 실패는
-`FAILED`, 성공 후 요청한 롤백은 `ROLLED_BACK`으로 기록한다.
+`FAILED`, 배치 또는 이미 접수된 구버전 웹 롤백은 `ROLLED_BACK`으로 기록한다.
 저장소 읽기·잠금·기록 자체의 예외는 재조정 함수 밖으로 전달되어 dispatcher 또는 Temporal이 재시도한다.
 
 스냅샷 전체를 통째로 덮어쓰는 방식은 아니다. 복구 대상 필드만 변경하며 UID, 이미지,
@@ -216,16 +218,16 @@ Job 생성과 이력 저장은 원자적이지 않다. 생성 직후 이력 저�
 |---|---|
 | 서버 없는 실행과 사용자 정의 트래픽 어댑터 | [StandaloneDeploymentTests.kt](deployment-library/src/test/kotlin/com/deploy/k8s/DeployDock/deployment/StandaloneDeploymentTests.kt) |
 | 배포/수동 실행 분리, 템플릿 고정, 중복 요청, 상태 확인, 유실, 재시작·권한 | [BatchExecutionTests.kt](deployment-library/src/test/kotlin/com/deploy/k8s/DeployDock/deployment/BatchExecutionTests.kt) |
-| preview 격리, 승인 전 전환 거부, 원본 복귀, 롤백 | [DeploymentExecutionTests.kt](src/test/kotlin/com/deploy/k8s/DeployDock/deployment/DeploymentExecutionTests.kt)의 `blue green isolates preview...` |
+| preview 격리, 승인 전 전환 거부, 원본 복귀, 웹 롤백 거부 | [DeploymentExecutionTests.kt](src/test/kotlin/com/deploy/k8s/DeployDock/deployment/DeploymentExecutionTests.kt)의 `blue green isolates preview...` |
 | 카나리 단계 승인·중복 방지·Route 반영 대기 | 같은 파일의 `canary waits for each approval...`, `canary promotion restores...` |
 | 원본 갱신 중 중단, 외부 Service 변경 충돌 | 같은 파일의 `abort while original is updating...`, `external Service selector change...` |
 | 재시작·잠금·권한·배치 부분 실패 | 같은 파일의 `store recreation...`, `live record lock...`, `namespace visibility...`, `grouped CronJob update...` |
 | Temporal payload와 Workflow | 같은 파일의 `Temporal converter...`, `Temporal workflow polls activities...` |
-| 실제 Pod의 HTTP 버전·승격·롤백 | [DeploymentClusterTests.kt](src/test/kotlin/com/deploy/k8s/DeployDock/deployment/DeploymentClusterTests.kt) |
+| 실제 Pod의 HTTP 버전·승격·이전 리비전 재배포 | [DeploymentClusterTests.kt](src/test/kotlin/com/deploy/k8s/DeployDock/deployment/DeploymentClusterTests.kt) |
 
 일반 테스트는 mock API 서버의 상태를 테스트 코드에서 갱신하므로 실제 Kubernetes controller나
 Gateway 데이터 경로까지 검증하지 않는다. 실 클러스터 테스트는 별도 환경변수가 있어야 실행된다.
-배치 수동 실행 분리 후 자동 테스트 47개 통과, 실 클러스터 테스트 1개 미실행을 확인했다.
+웹 리비전 재배포 변경 후 자동 테스트 51개 통과, 별도 선택형 실 클러스터 테스트 1개 미실행을 확인했다.
 모든 Kubernetes 환경에서 실행을 검증했다는 의미는 아니다.
 
 ## 9. 웹 콘솔
@@ -239,11 +241,12 @@ Gateway 데이터 경로까지 검증하지 않는다. 실 클러스터 테스�
 - `loadDetail()`은 선택한 앱의 설정과 실행을 조회하며, 앱 변경 후 도착한 이전 응답은 버린다.
 - 실행 현황은 4초마다 갱신한다. `renderActions()`가 상태·가중치 단계·최신 실행 여부에 따라 버튼을 구성한다.
 - 상태 조회 실패 시 `fresh=false`로 변경 요청을 막는다. 최종 권한·상태 검사는 서버가 수행한다.
-- 실행·승인·중단·롤백은 확인 대화상자를 거친다. `postIdempotent()`는 응답 유실 시 재시도할 requestId를 sessionStorage에 유지하고 성공 응답 후 제거한다.
+- 실행·승인·중단·배치 롤백은 확인 대화상자를 거친다. `postIdempotent()`는 응답 유실 시 재시도할 requestId를 sessionStorage에 유지하고 성공 응답 후 제거한다.
 - preview는 서버가 반환한 Service·포트로 명령을 구성한다. UI는 port-forward를 실행하지 않는다. 종료된 실행에서는 preview 접속 버튼을 숨긴다.
 - DOM에는 서버 문자열을 `textContent`로 넣는다. 스냅샷은 기존 API에서 제외하고 화면에도 표시하지 않는다.
 - 배치의 `loadExecutions()`는 수동 실행과 실제 CronJob 이미지를 따로 읽고 `executionFresh`로 실행 버튼을 제어한다. 이 조회 실패가 배포 버튼까지 잠그지 않는다.
 - 배치 배포 버튼은 `/runs`, 수동 실행 버튼은 `/executions`를 호출한다. 각 API가 별도의 이력 목록에 저장한다.
+- 웹 `renderRevisions()`는 `/revisions` 목록을 표시하며 선택한 configuration ID로 새 `/runs` 요청을 보낸다. 최신 설정은 그대로 두고 실행 이력을 추가한다. 웹 롤백 버튼은 만들지 않는다.
 
 [브라우저 테스트](dev/ui/check.mjs)는 별도 개발용 모의 API를 사용한다.
 제품에 데모 서버를 포함하거나 클러스터 실패 시 모의 데이터로 자동 대체하지 않는다.

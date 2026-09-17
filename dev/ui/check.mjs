@@ -36,8 +36,7 @@ try {
     assert.match(await page.locator("#preview-link").getAttribute("href"), /18081/);
     await confirm("승격 승인");
     await status("SUCCEEDED");
-    await confirm("이전 버전으로 롤백");
-    await status("ROLLED_BACK");
+    assert.equal(await page.getByRole("button", { name: /롤백/ }).count(), 0);
 
     const suffix = Date.now().toString(36);
     await page.getByRole("button", { name: "앱 등록", exact: true }).click();
@@ -84,7 +83,7 @@ try {
     await page.getByRole("button", { name: "설정 저장", exact: true }).click();
     await page.waitForFunction(() => document.querySelector("#configuration-count").textContent === "최신 r2");
     assert.equal(await page.locator(".configuration-row").count(), 1);
-    await page.locator("[data-deploy]").first().click();
+    await page.locator("#configurations [data-deploy]").click();
     await page.locator("#confirm-submit").click();
     await status("AWAITING_APPROVAL");
     assert.equal(await page.getByRole("button", { name: "승격 승인", exact: true }).count(), 0);
@@ -94,6 +93,28 @@ try {
     await page.getByRole("button", { name: "승격 승인", exact: true }).waitFor();
     await confirm("승격 승인");
     await status("SUCCEEDED");
+
+    assert.equal(await page.getByRole("button", { name: /롤백/ }).count(), 0);
+    const beforeRedeploy = await page.locator("#runs tr").count();
+    await page.getByRole("tab", { name: "리비전", exact: true }).click();
+    assert.equal(await page.locator("#revisions tr").count(), 2);
+    await noOverflow();
+    await page.screenshot({ path: "build/ui/revisions-desktop.png", fullPage: true });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await noOverflow();
+    await page.screenshot({ path: "build/ui/revisions-mobile.png", fullPage: true });
+    await page.setViewportSize({ width: 1440, height: 1000 });
+    await page.locator("#revisions tr").filter({ hasText: "r1" }).getByRole("button", { name: "이 리비전 실행" }).click();
+    await page.locator("#confirm-submit").click();
+    await status("AWAITING_APPROVAL");
+    assert.match(await page.locator("#run-title").textContent(), /r1/);
+    assert.match(await page.locator("#run-traffic").textContent(), /PREVIEW_ONLY/);
+    assert.equal(await page.locator("#runs tr").count(), beforeRedeploy + 1);
+    await confirm("승격 승인");
+    await status("SUCCEEDED");
+    await page.getByRole("tab", { name: "배포 설정", exact: true }).click();
+    assert.equal(await page.locator("#configuration-count").textContent(), "최신 r2");
+    assert.equal(await page.locator(".configuration-row").count(), 1);
 
     await page.getByRole("link", { name: "배치", exact: true }).click();
     await page.locator("#application-detail").waitFor();
@@ -161,7 +182,7 @@ try {
     await page.waitForFunction(() => document.querySelectorAll("#traffic-adapter option").length === 1);
     assert.equal(await page.locator("#orchestrator option").count(), 1);
     assert.deepEqual(errors, []);
-    console.log("UI checks passed: desktop/mobile, blue-green, retry identity, canary, separate web/batch pages, independent batch deployment/execution history, deployed image selection, latest settings, independent permissions, 403, 401.");
+    console.log("UI checks passed: desktop/mobile, web rollback removed, revision redeployment with new history and unchanged latest settings, blue-green, retry identity, canary, separate batch histories and permissions, 403, 401.");
 } catch (error) {
     await page.screenshot({ path: "build/ui/failure.png", fullPage: true });
     throw error;

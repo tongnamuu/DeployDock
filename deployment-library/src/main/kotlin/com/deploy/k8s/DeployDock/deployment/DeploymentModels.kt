@@ -141,6 +141,7 @@ data class DeploymentRecord(
     val configurations: List<DeploymentConfiguration> = emptyList(),
     val runs: List<DeploymentRun> = emptyList(),
     val batchExecutions: List<BatchExecution> = emptyList(),
+    val revisions: List<DeploymentConfiguration> = emptyList(),
 )
 
 data class DeploymentExecutionResult(
@@ -173,4 +174,7 @@ fun DeploymentConfiguration.usesWeightedTraffic(): Boolean =
     webStrategy == WebDeploymentStrategy.CANARY && (trafficAdapter != null || canaryRoute != null)
 
 fun DeploymentRecord.configurationFor(run: DeploymentRun): DeploymentConfiguration =
-    run.configuration ?: configurations.first { it.id == run.configurationId }
+    run.configuration ?: (configurations + revisions).first { it.id == run.configurationId }
+
+fun DeploymentRecord.webRevisions(): List<DeploymentConfiguration> =
+    (revisions + configurations + runs.map { configurationFor(it) }).distinctBy { it.id }.sortedByDescending { it.revision }
