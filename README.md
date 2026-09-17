@@ -1,5 +1,21 @@
 # DeployDock
 
+롤링 배포의 첫 실제 앱 검증은 [tongnamuu 롤링 실험](dev/rolling/README.md)을 참고한다.
+설정 저장과 적용을 별도로 실행하며, 새 제품 큐·복구 기능의 완성 여부와는 구분한다.
+
+## 프로젝트 구성
+
+목표는 특정 Kubernetes 배포판·클라우드·Ingress에 종속되지 않는 배포 라이브러리다.
+
+- `deployment-library`: 표준 Kubernetes API 기반 실행기와 저장소. Spring·Temporal 없이 사용한다.
+- `deployment-gateway-api`: 선택형 가중치 카나리 어댑터. 핵심 라이브러리는 이 모듈에 의존하지 않는다.
+- 루트 앱: 라이브러리를 사용하는 Spring Boot API·웹 콘솔·Temporal 실행 호스트다.
+
+[라이브러리 사용 예제와 확장 계약](deployment-library/README.md)을 먼저 참고한다.
+라이브러리는 Java 17 바이트코드로 빌드하며 저장소 빌드 도구 체인은 Java 25다.
+현재 워크로드는 Deployment와 CronJob이며, 모든 Kubernetes 환경의 실검증 완료를 뜻하지 않는다.
+정적 웹 화면은 루트 앱의 `src/main/resources/static`에서 제공한다.
+
 DeployDock exposes a reactive API for account authentication and Kubernetes
 namespace discovery. Accounts are stored as `DeployDockUser` custom resources;
 BCrypt password hashes are kept separately in Kubernetes Secrets.
@@ -12,6 +28,14 @@ JSON API, and the server has no template-rendering controller.
   static shell; its API requests still require administrator authorization.
 - `/custom-resources.html`: creates a registered custom resource when the
   signed-in user has `create` RBAC permission for that CRD and namespace.
+- `/deployments.html`: registers web applications, saves configurations,
+  starts deployments, and displays live execution phases with approval, abort,
+  saved revision execution, and preview connection controls. Uses the authenticated deployment API.
+- `/batch.html`: separate batch configuration, deployment history, and manual Job
+  execution history. Execution uses the currently deployed CronJob template.
+
+For a cluster-free, explicitly labelled UI preview and browser checks, see
+[deployment UI verification](dev/ui/README.md). Preview data is not a real deployment.
 
 ## Cluster resources
 
@@ -170,3 +194,84 @@ Namespace objects, cluster-scoped resources, and Kubernetes RBAC resources
 cannot be granted. Workload creation
 and Secret access can still be security-sensitive within the selected namespace,
 so grant only the verbs each member needs.
+
+## Deployment API
+
+The `/api/v2/deployment-applications` endpoints register deployment targets,
+save the latest configuration, and submit runs. Each application exposes only one
+saved current configuration; saving replaces it. Web applications also retain an
+immutable revision catalog (`GET /{id}/revisions`), including unexecuted revisions.
+Selecting an older revision submits a new run without changing the latest settings
+or previous runs. Web ROLLBACK requests are rejected; abort/failure recovery remains.
+Batch deployments still accept only the latest configuration. Requests are authenticated with
+the same JWT subject and are limited to namespaces visible to that principal.
+Runs return `202` with a persisted execution ID. A reconciler changes Kubernetes
+resources and checks readiness before reporting success. Configurations, runs,
+and rollback snapshots are stored in ConfigMaps in the control namespace.
+When `deploydock.temporal.enabled=true`, Temporal workflows drive reconciliation.
+Selecting `TEMPORAL` while disabled returns `503`; `LOCAL` is an explicit choice.
+
+Web deployments target existing `apps/v1 Deployment` workloads. Blue-green
+creates an isolated preview Service and waits for manual approval. Canary also
+supports preview deployment, testing, promotion, and rollback without a traffic
+adapter. Existing Ingress objects and their controller choice are left untouched.
+This preview-only mode does not split production traffic. Weighted canary
+uses an explicitly registered `CanaryTrafficAdapter`; Gateway API is optional.
+The bundled Gateway adapter is disabled by default. Enable it with
+`deploydock.deployment.gateway-api.enabled=true` only when a suitable controller
+and HTTPRoute already exist. Custom adapter beans can use other traffic systems.
+Argo Rollouts is not required. Promotion preserves the original Deployment and
+Service names. Batch modes update existing CronJob templates, not running Jobs.
+The UI separates web deployments (`/deployments.html`) from batch operations
+(`/batch.html`). Batch deployment history (`/runs`) and manual Job history
+(`/executions`) are independent. Manual execution snapshots the currently
+deployed CronJob template, not an unapplied saved configuration. Scheduled Jobs
+are not collected. Deploying a batch template never submits a manual Job.
+See [deployment operations and preview testing](DEPLOYMENTS.md) for prerequisites,
+permissions, approval, rollback, recovery, and current limits.
+For the implementation walkthrough, file responsibilities, and state transitions,
+see [deployment code guide](DEPLOYMENT_CODE.md).
+
+Register a web application and save preview-only canary/blue-green configurations.
+Neither Temporal nor a Gateway/Ingress adapter is required:
+
+```shell
+curl -X POST http://localhost:8080/api/v2/deployment-applications \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"shop-web","namespace":"team-a","kind":"WEB"}'
+
+curl -X POST http://localhost:8080/api/v2/deployment-applications/$APP_ID/configurations \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"image":"registry.example.com/shop:v2","replicas":3,"webStrategy":"CANARY"}'
+
+curl -X POST http://localhost:8080/api/v2/deployment-applications/$APP_ID/configurations \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"image":"registry.example.com/shop:v3","replicas":3,"webStrategy":"BLUE_GREEN"}'
+```
+
+For preview-only canary, test `result.previewService` and send `PROMOTE` when ready.
+`result.trafficMode` is `PREVIEW_ONLY`; `ADVANCE` is rejected because there is no
+weighted production routing. To opt into weighted routing, explicitly select a
+registered adapter as shown in [the operations guide](DEPLOYMENTS.md).
+
+Batch applications support grouped and individual deployment modes:
+
+```shell
+curl -X POST http://localhost:8080/api/v2/deployment-applications \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"billing-batch","namespace":"team-a","kind":"BATCH"}'
+
+curl -X POST http://localhost:8080/api/v2/deployment-applications/$BATCH_APP_ID/configurations \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"image":"registry.example.com/billing:v1","batchMode":"GROUPED","batchTargets":["settlement","invoice"]}'
+
+curl -X POST http://localhost:8080/api/v2/deployment-applications/$BATCH_APP_ID/configurations \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"image":"registry.example.com/billing:v2","batchMode":"INDIVIDUAL","batchTargets":["settlement"]}'
+```

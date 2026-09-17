@@ -17,3 +17,11 @@ data class DeployDockKubernetesProperties(
     val namespaceAccessResource: String = "pods",
     val namespaceAccessVerb: String = "list",
 )
+
+@ConfigurationProperties("deploydock.temporal")
+data class DeployDockTemporalProperties(
+    val enabled: Boolean = false,
+    val target: String = "127.0.0.1:7233",
+    val namespace: String = "default",
+    val taskQueue: String = "deploydock-deployments",
+)

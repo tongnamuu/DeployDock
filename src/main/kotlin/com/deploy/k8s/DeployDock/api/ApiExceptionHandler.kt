@@ -18,6 +18,10 @@ import com.deploy.k8s.DeployDock.kubernetes.RegisteredCustomResourceNotFoundExce
 import com.deploy.k8s.DeployDock.kubernetes.CustomResourceCreationForbiddenException
 import com.deploy.k8s.DeployDock.kubernetes.CustomResourceAlreadyExistsException
 import com.deploy.k8s.DeployDock.kubernetes.CustomResourceAccessException
+import com.deploy.k8s.DeployDock.deployment.DeploymentApplicationNotFoundException
+import com.deploy.k8s.DeployDock.deployment.DeploymentConfigurationNotFoundException
+import com.deploy.k8s.DeployDock.deployment.DeploymentForbiddenException
+import com.deploy.k8s.DeployDock.deployment.DeploymentValidationException
 import org.springframework.http.HttpStatus
 import org.springframework.web.bind.MethodArgumentNotValidException
 import org.springframework.web.bind.annotation.ExceptionHandler
@@ -29,6 +33,21 @@ data class ApiError(val code: String, val message: String)
 
 @RestControllerAdvice
 class ApiExceptionHandler {
+    @ExceptionHandler(io.fabric8.kubernetes.client.KubernetesClientException::class)
+    fun kubernetesRequestFailure(exception: io.fabric8.kubernetes.client.KubernetesClientException): org.springframework.http.ResponseEntity<ApiError> =
+        if (exception.code == 409) org.springframework.http.ResponseEntity.status(HttpStatus.CONFLICT)
+            .body(ApiError("RESOURCE_CONFLICT", "resource exists or changed; retry with the same requestId"))
+        else org.springframework.http.ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+            .body(ApiError("KUBERNETES_UNAVAILABLE", "Kubernetes request failed"))
+
+    @ExceptionHandler(com.deploy.k8s.DeployDock.deployment.DeploymentConflictException::class)
+    @ResponseStatus(HttpStatus.CONFLICT)
+    fun deploymentConflict(exception: RuntimeException) = ApiError("DEPLOYMENT_CONFLICT", exception.message ?: "deployment conflict")
+
+    @ExceptionHandler(com.deploy.k8s.DeployDock.deployment.DeploymentUnavailableException::class)
+    @ResponseStatus(HttpStatus.SERVICE_UNAVAILABLE)
+    fun deploymentUnavailable(exception: RuntimeException) = ApiError("DEPLOYMENT_UNAVAILABLE", exception.message ?: "deployment unavailable")
+
     @ExceptionHandler(DuplicateUserException::class)
     @ResponseStatus(HttpStatus.CONFLICT)
     fun duplicateUser(exception: DuplicateUserException) =
@@ -83,6 +102,21 @@ class ApiExceptionHandler {
     @ResponseStatus(HttpStatus.CONFLICT)
     fun customResourceAlreadyExists(exception: CustomResourceAlreadyExistsException) =
         ApiError("CUSTOM_RESOURCE_ALREADY_EXISTS", exception.message ?: "custom resource already exists")
+
+    @ExceptionHandler(DeploymentForbiddenException::class)
+    @ResponseStatus(HttpStatus.FORBIDDEN)
+    fun deploymentForbidden() =
+        ApiError("DEPLOYMENT_FORBIDDEN", "deployment access is not allowed")
+
+    @ExceptionHandler(DeploymentValidationException::class)
+    @ResponseStatus(HttpStatus.BAD_REQUEST)
+    fun deploymentValidation(exception: DeploymentValidationException) =
+        ApiError("INVALID_DEPLOYMENT_REQUEST", exception.message ?: "deployment request is invalid")
+
+    @ExceptionHandler(DeploymentApplicationNotFoundException::class, DeploymentConfigurationNotFoundException::class)
+    @ResponseStatus(HttpStatus.NOT_FOUND)
+    fun deploymentTargetNotFound(exception: RuntimeException) =
+        ApiError("DEPLOYMENT_TARGET_NOT_FOUND", exception.message ?: "deployment target does not exist")
 
     @ExceptionHandler(MethodArgumentNotValidException::class, ServerWebInputException::class)
     @ResponseStatus(HttpStatus.BAD_REQUEST)

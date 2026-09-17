@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>배치 · DeployDock</title>
+    <link rel="stylesheet" href="/css/app.css">
+    <link rel="stylesheet" href="/css/deployments.css">
+</head>
+<body class="deployments-page" data-kind="BATCH">
+<header class="topbar">
+    <a class="brand" href="/"><span class="brand-mark">D</span><span>DeployDock</span></a>
+    <nav class="session-actions" aria-label="페이지 이동">
+        <a href="/">네임스페이스</a><a href="/deployments.html">웹 배포</a><a href="/batch.html" aria-current="page">배치</a>
+        <span id="session-user" class="session-user"></span>
+        <button id="logout" class="icon-button" type="button" aria-label="로그아웃" title="로그아웃"><i data-icon="LogOut"></i></button>
+    </nav>
+</header>
+<main class="deployment-shell">
+    <div class="title-row"><div><p class="section-label">BATCH OPERATIONS</p><h1>배치</h1></div>
+        <div class="toolbar"><span id="connection" role="status">연결 중</span><button id="refresh" class="icon-button" type="button" aria-label="새로고침" title="새로고침"><i data-icon="RefreshCw"></i></button>
+        <button id="register-open" class="button button-primary" type="button" disabled><i data-icon="Plus"></i>앱 등록</button></div>
+    </div>
+    <div id="toast" class="toast" role="status" hidden></div>
+    <div id="environment-notice" class="notice" hidden>UI 미리보기 · Kubernetes 연결 없음</div>
+    <div id="page-error" class="error-banner" role="alert" hidden></div>
+    <section id="login-panel" hidden>
+        <h2>로그인</h2>
+        <form id="login-form" class="form-stack">
+            <label>사용자 이름<input name="username" autocomplete="username" required></label>
+            <label>비밀번호<input name="password" type="password" autocomplete="current-password" required></label>
+            <button class="button button-primary" type="submit">로그인</button>
+        </form>
+    </section>
+    <div id="workspace" class="deployment-layout" hidden>
+        <aside class="application-sidebar" aria-label="배포 앱">
+            <label>네임스페이스<select id="namespace-filter"><option value="">전체</option></select></label>
+            <label class="search-label">앱 검색<input id="app-search" type="search" placeholder="이름 검색"></label>
+            <div class="list-heading"><h2>애플리케이션</h2><span id="app-count">0</span></div>
+            <div id="applications" class="application-list"></div>
+        </aside>
+        <section class="deployment-main">
+            <div id="selection-empty" class="empty-state">등록된 앱이 없습니다.</div>
+            <div id="application-detail" hidden>
+                <div class="application-heading"><div><h2 id="app-name"></h2><p id="app-meta"></p></div><span id="app-kind" class="badge"></span></div>
+                <div class="view-tabs" role="tablist" aria-label="배포 화면">
+                    <button id="runs-tab" type="button" role="tab" aria-controls="runs-view" aria-selected="true">배포 이력</button>
+                    <button id="executions-tab" type="button" role="tab" aria-controls="executions-view" aria-selected="false" tabindex="-1">실행 이력</button>
+                    <button id="config-tab" type="button" role="tab" aria-controls="config-view" aria-selected="false" tabindex="-1">배포 설정</button>
+                </div>
+                <section id="runs-view" role="tabpanel" aria-labelledby="runs-tab">
+                    <div class="section-heading"><h3>배포 이력</h3><span id="run-count"></span></div>
+                    <div class="table-scroll"><table><thead><tr><th>배포</th><th>전략</th><th>상태</th><th>요청 시각</th><th>요청자</th></tr></thead><tbody id="runs"></tbody></table></div>
+                    <p id="runs-empty" class="empty-state" hidden>배포 이력이 없습니다.</p>
+                    <section id="run-detail" class="run-detail" hidden>
+                        <div class="section-heading"><div><h3 id="run-title"></h3><p id="run-id" class="mono muted"></p></div><span id="run-status" class="badge"></span></div>
+                        <ol id="progress" class="progress-track" aria-label="배포 진행 단계"></ol>
+                        <div class="run-facts"><div><span>현재 단계</span><strong id="run-phase"></strong></div><div><span>이미지</span><strong id="run-image" class="mono"></strong></div><div><span>트래픽</span><strong id="run-traffic"></strong></div><div><span>배포 엔진</span><strong id="run-engine"></strong></div></div>
+                        <div id="run-error" class="error-banner" hidden></div>
+                        <div id="recovery-error" class="error-banner" hidden></div>
+                        <div id="preview" class="preview-band" hidden>
+                            <div class="section-heading"><h3>신규 버전 preview</h3><span id="preview-service" class="mono"></span></div>
+                            <p id="preview-state" class="muted"></p>
+                            <div class="preview-controls"><label>Service 포트<select id="preview-port"></select></label><label>로컬 포트<input id="local-port" type="number" value="18080" min="1024" max="65535"></label></div>
+                            <div class="command-row"><code id="preview-command"></code><button id="copy-preview" class="icon-button" type="button" aria-label="preview 명령 복사" title="preview 명령 복사"><i data-icon="Copy"></i></button></div>
+                            <a id="preview-link" class="text-link" href="http://127.0.0.1:18080" target="_blank" rel="noopener noreferrer">로컬 preview 열기<i data-icon="ExternalLink"></i></a>
+                        </div>
+                        <div id="run-actions" class="run-actions"></div>
+                    </section>
+                </section>
+                <section id="executions-view" role="tabpanel" aria-labelledby="executions-tab" hidden>
+                    <div class="section-heading"><h3>수동 실행</h3><span id="execution-count"></span></div>
+                    <div id="execution-error" class="error-banner" role="alert" hidden></div>
+                    <div class="manual-execution">
+                        <label>현재 배포된 CronJob<select id="execution-target"></select></label>
+                        <button id="execute-batch" class="button button-primary" type="button" disabled><i data-icon="Play"></i>수동 실행</button>
+                    </div>
+                    <p id="execution-target-image" class="mono muted"></p>
+                    <div class="section-heading"><h3>실행 이력</h3></div>
+                    <div class="table-scroll"><table><thead><tr><th>Job / CronJob</th><th>실행 이미지</th><th>상태</th><th>요청 시각</th><th>시작 / 완료</th><th>Pod 성공 / 실패</th></tr></thead><tbody id="executions"></tbody></table></div>
+                    <p id="executions-empty" class="empty-state">수동 실행 이력이 없습니다.</p>
+                </section>
+                <section id="config-view" role="tabpanel" aria-labelledby="config-tab" hidden>
+                    <form id="configuration-form" class="configuration-form">
+                        <div class="section-heading"><h3>새 배포 설정</h3><span id="configuration-count"></span></div>
+                        <label class="span-two">컨테이너 이미지<input name="image" required maxlength="512" placeholder="registry.example.com/billing:v4" spellcheck="false"></label>
+                        <div id="web-fields" class="field-grid span-two">
+                            <label>배포 전략<select name="webStrategy" id="strategy"><option value="ROLLING">롤링</option><option value="BLUE_GREEN">블루그린</option><option value="CANARY">카나리</option></select></label>
+                            <label>Pod 수<input name="replicas" type="number" min="1" step="1" placeholder="현재 값 유지"></label>
+                            <div id="canary-fields" class="field-grid span-two" hidden>
+                                <label>트래픽 방식<select id="traffic-adapter" name="trafficAdapter"><option value="">Preview 검증</option></select></label>
+                                <label id="canary-steps-label" hidden>가중치 단계 (%)<input name="canarySteps" value="10, 50" placeholder="10, 50"></label>
+                                <label id="traffic-options-label" class="span-two" hidden>어댑터 설정 (JSON)<textarea name="trafficOptions" rows="3" spellcheck="false">{}</textarea></label>
+                            </div>
+                        </div>
+                        <div id="batch-fields" class="field-grid span-two" hidden>
+                            <label>배치 방식<select name="batchMode"><option value="INDIVIDUAL">개별 배포</option><option value="GROUPED">그룹 배포</option></select></label>
+                            <label>CronJob 대상<input name="batchTargets" placeholder="settlement, invoice"></label>
+                        </div>
+                        <label>단계 제한 시간 (초)<input name="progressDeadlineSeconds" type="number" min="30" max="3600" value="600" required></label>
+                        <div class="form-submit"><button class="button button-secondary" type="submit">설정 저장</button></div>
+                    </form>
+                    <section class="saved-configurations"><div class="section-heading"><h3>최신 배포 설정</h3></div><div id="configurations"></div></section>
+                </section>
+            </div>
+        </section>
+    </div>
+</main>
+<dialog id="register-dialog">
+    <div class="section-heading"><h2>앱 등록</h2><button class="icon-button" data-close type="button" aria-label="닫기" title="닫기"><i data-icon="X"></i></button></div>
+    <form id="register-form" class="form-stack">
+        <label>네임스페이스<select name="namespace" id="register-namespace" required></select></label>
+        <input name="kind" id="register-kind" type="hidden" value="BATCH">
+        <label>배치 앱 이름<input name="name" required maxlength="63" pattern="[a-z0-9]([-a-z0-9]*[a-z0-9])?" placeholder="billing"></label>
+        <label id="service-label" hidden>운영 Service<input name="serviceName" placeholder="워크로드 이름과 동일"></label>
+        <label>컨테이너 이름<input name="containerName" placeholder="단일 컨테이너면 생략"></label>
+        <label>배포 엔진<select name="orchestrator" id="orchestrator"><option>LOCAL</option></select></label>
+        <p id="register-error" class="error-message" role="alert" hidden></p>
+        <button class="button button-primary" type="submit">등록</button>
+    </form>
+</dialog>
+<dialog id="confirm-dialog">
+    <h2 id="confirm-title"></h2><p id="confirm-summary"></p>
+    <p id="confirm-error" class="error-message" role="alert" hidden></p>
+    <div class="dialog-actions"><button class="button button-secondary" data-close type="button">취소</button><button id="confirm-submit" class="button button-primary" type="button">확인</button></div>
+</dialog>
+<script type="module" src="/js/deployments.js"></script>
+</body>
+</html>

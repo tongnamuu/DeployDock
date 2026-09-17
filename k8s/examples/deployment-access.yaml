@@ -1,0 +1,41 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: deploydock-deployment-operator
+  namespace: team-a
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "create", "update"]
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list", "create", "update"]
+  - apiGroups: ["discovery.k8s.io"]
+    resources: ["endpointslices"]
+    verbs: ["list"]
+  - apiGroups: ["gateway.networking.k8s.io"]
+    resources: ["httproutes"]
+    verbs: ["get", "update"]
+  - apiGroups: ["batch"]
+    resources: ["cronjobs"]
+    verbs: ["get", "update"]
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: deploydock-deployment-operator
+  namespace: team-a
+subjects:
+  - kind: ServiceAccount
+    name: deploydock
+    namespace: deploydock-system
+  - kind: User
+    apiGroup: rbac.authorization.k8s.io
+    name: deploydock:alice
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: deploydock-deployment-operator
