@@ -19,6 +19,8 @@ repositories {
 }
 
 dependencies {
+	implementation(project(":deployment-library"))
+	implementation(project(":deployment-gateway-api"))
 	implementation("org.springframework.boot:spring-boot-starter-security")
 	implementation("org.springframework.boot:spring-boot-starter-validation")
 	implementation("org.springframework.boot:spring-boot-starter-webflux")

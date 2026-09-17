@@ -47,8 +47,8 @@ class DeploymentExecutionTests {
     fun setup() {
         server.expect().post().withPath("/apis/authorization.k8s.io/v1/subjectaccessreviews")
             .andReturn(201, SubjectAccessReviewBuilder().withNewStatus().withAllowed(true).endStatus().build()).always()
-        store = KubernetesDeploymentStore(client, DeployDockKubernetesProperties())
-        workloads = KubernetesDeploymentWorkloads(client)
+        store = KubernetesDeploymentStore(client, "deploydock-system")
+        workloads = KubernetesDeploymentWorkloads(client, listOf(GatewayApiTrafficAdapter(client)), SubjectAccessReviewAuthorization(client))
         reconciler = DeploymentReconciler(store, workloads, clock)
         val orchestrators = DeploymentRunOrchestrators(store, reconciler, null, DeployDockTemporalProperties())
         val namespaces = object : NamespaceAccessProvider {
@@ -261,7 +261,7 @@ class DeploymentExecutionTests {
     fun `store recreation preserves snapshot and preview creation is idempotent`() {
         val (app, run) = submit(WebDeploymentStrategy.BLUE_GREEN)
         tick(app, run, 2)
-        val restored = KubernetesDeploymentStore(client, DeployDockKubernetesProperties())
+        val restored = KubernetesDeploymentStore(client, "deploydock-system")
         val saved = restored.get(app.id).runs.single()
         assertNotNull(saved.snapshot?.service)
         restored.update(app.id) { it.copy(runs = listOf(saved.copy(phase = "APPLY"))) }

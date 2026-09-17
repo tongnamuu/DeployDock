@@ -201,7 +201,7 @@ ConfigMap·Secret도 참조 이름뿐 아니라 실제 실행에 사용할 내�
 | D-05 | 배치 이력 | BH-03~05의 단위·기간·최소 건수 우선순위·보관 범위·옵션 전환 규칙. |
 | D-06 | 배포 이력 | 웹·배치 배포 이력 보관 기간과 삭제 정책. 배치 실행 이력의 한 달 규칙을 자동 적용하지 않는다. |
 | D-07 | 접근 권한 | namespace·앱별 조회·설정 편집·배포 신청·타인 요청 취소·복구 조치 권한과 관리자 범위. |
-| D-08 | 웹 전략 | 기존 Deployment 기반 `ROLLING`, `BLUE_GREEN`, `CANARY`를 지원한다. 블루그린은 preview Service로 검증 후 수동 승인한다. 카나리는 기존 Gateway API HTTPRoute로 설정한 가중치 단계를 수동 승인한다. 원본 Deployment와 Service 이름을 유지하며 성공 후 preview Pod는 0개로 줄인다. Argo Rollouts는 필요 없다. 상세 조건과 제한은 `DEPLOYMENTS.md`에 기록한다. |
+| D-08 | 웹 전략 | 어떤 Kubernetes 환경에서도 사용하는 라이브러리가 목표다. 기존 Deployment 기반 롤링·블루그린은 표준 API로 실행하고, 가중치 카나리는 환경별 `CanaryTrafficAdapter`를 등록해 사용한다. Gateway API 구현은 선택형 별도 모듈이며 Argo Rollouts도 필수가 아니다. 블루그린은 preview Service로 검증 후 수동 승인한다. 원본 Deployment·Service 이름을 유지하고 성공 후 preview Pod는 0개로 줄인다. 모든 클러스터 실검증을 의미하지 않으며 조건·제한은 `DEPLOYMENTS.md`, 독립 사용법은 `deployment-library/README.md`에 기록한다. |
 | D-09 | HA·복구 목표 | 저장소를 포함한 단일 프로세스·단일 물리 노드 장애 보장을 기준안으로 검토한다. 장애 시 허용 중단 시간·데이터 손실 범위, 네트워크 분할·전체 클러스터 장애 대응 범위를 확정한다. 같은 호스트의 여러 Kind 노드는 물리 노드 HA 검증이 아니다. |
 | D-10 | 성능·규모 | 동시 사용자·앱·대기 요청 수, 처리 공정성, 목록·신청 응답 시간과 화면 상태 갱신 지연의 목표. |
 | D-11 | 웹 실패 처리 | 전략별 실패 판정, timeout, 자동 롤백 여부와 복구 한계, 운영자 개입 조건. 진행 중 취소의 이전 버전 복구는 필수다. |

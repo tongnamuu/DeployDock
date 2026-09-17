@@ -1,6 +1,5 @@
 package com.deploy.k8s.DeployDock.deployment
 
-import com.deploy.k8s.DeployDock.config.DeployDockKubernetesProperties
 import com.deploy.k8s.DeployDock.config.DeployDockTemporalProperties
 import com.deploy.k8s.DeployDock.kubernetes.NamespaceAccessProvider
 import com.deploy.k8s.DeployDock.kubernetes.NamespaceSummary
@@ -53,8 +52,8 @@ class DeploymentClusterTests {
                 client.services().inNamespace(namespace).resource(ServiceBuilder().withNewMetadata().withName("web").endMetadata()
                     .withNewSpec().addToSelector("app", "web").addNewPort().withPort(80).withNewTargetPort(80).endPort().endSpec().build()).create()
                 val originalUid = client.apps().deployments().inNamespace(namespace).withName("web").get().metadata.uid
-                val store = KubernetesDeploymentStore(client, DeployDockKubernetesProperties(controlNamespace = namespace))
-                val workloads = KubernetesDeploymentWorkloads(client)
+                val store = KubernetesDeploymentStore(client, namespace)
+                val workloads = KubernetesDeploymentWorkloads(client, authorization = SubjectAccessReviewAuthorization(client))
                 val reconciler = DeploymentReconciler(store, workloads, Clock.systemUTC())
                 val namespaces = object : NamespaceAccessProvider {
                     override fun findAccessible(principal: String) = Mono.just(listOf(NamespaceSummary(namespace, "Active")))

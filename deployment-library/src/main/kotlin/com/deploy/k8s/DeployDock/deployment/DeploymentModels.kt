@@ -1,8 +1,5 @@
 package com.deploy.k8s.DeployDock.deployment
 
-import jakarta.validation.constraints.NotBlank
-import jakarta.validation.constraints.Pattern
-import jakarta.validation.constraints.Size
 import java.time.Instant
 
 enum class ApplicationKind {
@@ -39,11 +36,7 @@ enum class DeploymentRunStatus {
 }
 
 data class RegisterApplicationRequest(
-    @field:Pattern(regexp = "[a-z0-9](?:[-a-z0-9]*[a-z0-9])?")
-    @field:Size(max = 63)
     val name: String,
-    @field:Pattern(regexp = "[a-z0-9](?:[-a-z0-9]*[a-z0-9])?")
-    @field:Size(max = 63)
     val namespace: String,
     val kind: ApplicationKind,
     val orchestrator: DeploymentOrchestrator = DeploymentOrchestrator.LOCAL,
@@ -65,8 +58,6 @@ data class DeploymentApplication(
 )
 
 data class SaveDeploymentConfigurationRequest(
-    @field:NotBlank
-    @field:Size(max = 512)
     val image: String,
     val replicas: Int? = null,
     val webStrategy: WebDeploymentStrategy? = null,
@@ -75,6 +66,8 @@ data class SaveDeploymentConfigurationRequest(
     val canaryRoute: String? = null,
     val canarySteps: List<Int> = listOf(10, 50),
     val progressDeadlineSeconds: Long = 600,
+    val trafficAdapter: String? = null,
+    val trafficOptions: Map<String, String> = emptyMap(),
 )
 
 data class DeploymentConfiguration(
@@ -91,6 +84,8 @@ data class DeploymentConfiguration(
     val canaryRoute: String? = null,
     val canarySteps: List<Int> = listOf(10, 50),
     val progressDeadlineSeconds: Long = 600,
+    val trafficAdapter: String? = null,
+    val trafficOptions: Map<String, String> = emptyMap(),
 )
 
 data class SubmitDeploymentRunRequest(
@@ -135,6 +130,7 @@ data class DeploymentSnapshot(
     val route: io.fabric8.kubernetes.api.model.GenericKubernetesResource? = null,
     val cronJobs: List<io.fabric8.kubernetes.api.model.batch.v1.CronJob> = emptyList(),
     val isolationKey: String? = null,
+    val traffic: TrafficSnapshot? = null,
 )
 
 data class DeploymentRecord(

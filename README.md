@@ -5,12 +5,16 @@
 
 ## 프로젝트 구성
 
-현재 빌드는 루트 Gradle 프로젝트 하나이며, 하나의 Spring Boot 앱과 실행 JAR로 구성한다.
-기능은 `src/main/kotlin/com/deploy/k8s/DeployDock` 아래 패키지로 구분한다.
-현재 패키지는 `auth`, `api`, `config`, `kubernetes`이며, 추가 배포·큐·복구 기능도 같은 모듈에 구현한다.
-정적 웹 화면은 같은 앱의 `src/main/resources/static`에서 제공한다.
-HA 구성을 정한 뒤 필요한 실행 역할과 모듈 분리를 결정한다. 자세한 패키지 경계는
-[재구축 계획](docs/architecture/rebuild-plan.md#4-단일-모듈-안의-패키지와-실행-구성)에 정리한다.
+목표는 특정 Kubernetes 배포판·클라우드·Ingress에 종속되지 않는 배포 라이브러리다.
+
+- `deployment-library`: 표준 Kubernetes API 기반 실행기와 저장소. Spring·Temporal 없이 사용한다.
+- `deployment-gateway-api`: 선택형 가중치 카나리 어댑터. 핵심 라이브러리는 이 모듈에 의존하지 않는다.
+- 루트 앱: 라이브러리를 사용하는 Spring Boot API·웹 콘솔·Temporal 실행 호스트다.
+
+[라이브러리 사용 예제와 확장 계약](deployment-library/README.md)을 먼저 참고한다.
+라이브러리는 Java 17 바이트코드로 빌드하며 저장소 빌드 도구 체인은 Java 25다.
+현재 워크로드는 Deployment와 CronJob이며, 모든 Kubernetes 환경의 실검증 완료를 뜻하지 않는다.
+정적 웹 화면은 루트 앱의 `src/main/resources/static`에서 제공한다.
 
 DeployDock exposes a reactive API for account authentication and Kubernetes
 namespace discovery. Accounts are stored as `DeployDockUser` custom resources;
@@ -195,8 +199,11 @@ When `deploydock.temporal.enabled=true`, Temporal workflows drive reconciliation
 Selecting `TEMPORAL` while disabled returns `503`; `LOCAL` is an explicit choice.
 
 Web deployments target existing `apps/v1 Deployment` workloads. Blue-green
-creates an isolated preview Service and waits for manual approval. Canary uses
-an existing Gateway API HTTPRoute for weighted traffic and manual steps.
+creates an isolated preview Service and waits for manual approval. Weighted canary
+uses an explicitly registered `CanaryTrafficAdapter`; Gateway API is optional.
+The bundled Gateway adapter is disabled by default. Enable it with
+`deploydock.deployment.gateway-api.enabled=true` only when a suitable controller
+and HTTPRoute already exist. Custom adapter beans can use other traffic systems.
 Argo Rollouts is not required. Promotion preserves the original Deployment and
 Service names. Batch modes update existing CronJob templates, not running Jobs.
 See [deployment operations and preview testing](DEPLOYMENTS.md) for prerequisites,
@@ -204,8 +211,8 @@ permissions, approval, rollback, recovery, and current limits.
 For the implementation walkthrough, file responsibilities, and state transitions,
 see [deployment code guide](DEPLOYMENT_CODE.md).
 
-Register a Temporal-orchestrated web application and save canary/blue-green
-configurations:
+With Temporal and the optional Gateway adapter enabled, register a web application
+and save canary/blue-green configurations:
 
 ```shell
 curl -X POST http://localhost:8080/api/v2/deployment-applications \
@@ -216,7 +223,7 @@ curl -X POST http://localhost:8080/api/v2/deployment-applications \
 curl -X POST http://localhost:8080/api/v2/deployment-applications/$APP_ID/configurations \
   -H "Authorization: Bearer $ACCESS_TOKEN" \
   -H 'Content-Type: application/json' \
-  -d '{"image":"registry.example.com/shop:v2","replicas":3,"webStrategy":"CANARY","canaryRoute":"shop-web","canarySteps":[10,50]}'
+  -d '{"image":"registry.example.com/shop:v2","replicas":3,"webStrategy":"CANARY","trafficAdapter":"gateway-api","trafficOptions":{"routeName":"shop-web"},"canarySteps":[10,50]}'
 
 curl -X POST http://localhost:8080/api/v2/deployment-applications/$APP_ID/configurations \
   -H "Authorization: Bearer $ACCESS_TOKEN" \

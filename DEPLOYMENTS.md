@@ -5,6 +5,9 @@ DeployDock 상위 CRD 설치는 필요하지 않다. 실행 상태와 복구용 
 `deploydock-system`의 ConfigMap에 저장한다.
 
 파일별 역할과 내부 호출·상태 전이는 [배포 코드 읽기](DEPLOYMENT_CODE.md)를 참고한다.
+Spring 서버 없이 사용하는 방법은 [라이브러리 가이드](deployment-library/README.md)에 있다.
+아래 JWT·사용자 권한·주기 실행 설정은 루트 서버 앱 기준이다. 핵심 라이브러리는
+호출자가 제공한 KubernetesClient와 재조정 스케줄을 사용한다.
 
 ## 준비
 
@@ -59,8 +62,12 @@ curl -X POST "http://localhost:8080/api/v2/deployment-applications/$APP_ID/runs/
 
 ## 카나리 흐름
 
-현재 지원하는 운영 트래픽 분배기는 Gateway API `gateway.networking.k8s.io/v1 HTTPRoute`다.
-이를 지원하는 Gateway controller가 설치되어 있고, HTTPRoute가 운영 Service를 가리켜야 한다.
+핵심 실행기는 `CanaryTrafficAdapter`에 트래픽 제어를 위임한다. 기본 환경에서는 어댑터가
+없으므로 가중치 카나리 설정을 저장할 때 명시적으로 거부한다. 롤링·블루그린·배치에는 필요 없다.
+기본 제공하는 선택형 어댑터는 Gateway API `gateway.networking.k8s.io/v1 HTTPRoute`다.
+서버에서 사용하려면 `deploydock.deployment.gateway-api.enabled=true`를 지정한다.
+이를 지원하는 Gateway controller가 이미 설치되어 있고, HTTPRoute가 운영 Service를 가리켜야 한다.
+라이브러리나 서버는 controller를 설치하지 않는다. 환경에 맞는 다른 어댑터를 직접 등록할 수 있다.
 일반 Service의 replica 비율을 정확한 요청 비율로 간주하지 않는다.
 Ingress NGINX와 서비스 메시용 어댑터는 아직 없다.
 
@@ -70,13 +77,16 @@ Ingress NGINX와 서비스 메시용 어댑터는 아직 없다.
 {
   "image": "registry.example.com/shop:v2",
   "webStrategy": "CANARY",
-  "canaryRoute": "shop-web",
+  "trafficAdapter": "gateway-api",
+  "trafficOptions": {"routeName": "shop-web"},
   "canarySteps": [10, 50],
   "progressDeadlineSeconds": 600
 }
 ```
 
-HTTPRoute는 parent 하나, 규칙 하나, 같은 네임스페이스의 운영 Service backend 하나인 구성을 지원한다.
+기존 `canaryRoute` 필드도 Gateway 어댑터 선택·경로 이름의 호환 별칭으로 유지한다.
+다음 설명은 Gateway 어댑터 기준이다. HTTPRoute는 parent 하나, 규칙 하나,
+같은 네임스페이스의 운영 Service backend 하나인 구성을 지원한다.
 매칭 조건·호스트·필터를 유지하고 backend 가중치만 변경한다.
 
 처음에는 preview 전용으로 준비하고 운영 노출은 0%다. 신규 Pod 테스트 후 `ADVANCE`를 보내면

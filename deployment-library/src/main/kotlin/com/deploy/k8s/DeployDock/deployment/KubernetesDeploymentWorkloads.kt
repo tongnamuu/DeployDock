@@ -1,6 +1,5 @@
 package com.deploy.k8s.DeployDock.deployment
 
-import io.fabric8.kubernetes.api.model.GenericKubernetesResource
 import io.fabric8.kubernetes.api.model.HasMetadata
 import io.fabric8.kubernetes.api.model.ObjectMetaBuilder
 import io.fabric8.kubernetes.api.model.PodSpec
@@ -8,34 +7,44 @@ import io.fabric8.kubernetes.api.model.Service
 import io.fabric8.kubernetes.api.model.ServiceBuilder
 import io.fabric8.kubernetes.api.model.apps.Deployment
 import io.fabric8.kubernetes.api.model.apps.DeploymentBuilder
-import io.fabric8.kubernetes.api.model.authorization.v1.SubjectAccessReviewBuilder
 import io.fabric8.kubernetes.client.KubernetesClient
-import io.fabric8.kubernetes.client.dsl.base.ResourceDefinitionContext
-import org.springframework.stereotype.Component
 
-@Component
-class KubernetesDeploymentWorkloads(client: KubernetesClient) {
+class KubernetesDeploymentWorkloads(
+    client: KubernetesClient,
+    trafficAdapters: List<CanaryTrafficAdapter> = emptyList(),
+    private val authorization: DeploymentAuthorization = ClientCredentialsAuthorization,
+) {
+    private val adapters = trafficAdapters.associateBy { it.id }.also {
+        require(it.size == trafficAdapters.size) { "traffic adapter IDs must be unique" }
+    }
+
+    fun capabilities() = DeploymentCapabilities(
+        setOf(WebDeploymentStrategy.ROLLING, WebDeploymentStrategy.BLUE_GREEN) +
+            if (adapters.isNotEmpty()) setOf(WebDeploymentStrategy.CANARY) else emptySet(),
+        BatchDeploymentMode.entries.toSet(), adapters.keys,
+    )
+
+    fun validateTraffic(config: DeploymentConfiguration) {
+        if (config.webStrategy == WebDeploymentStrategy.CANARY) traffic(config).validate(config)
+    }
+
+    private fun traffic(config: DeploymentConfiguration): CanaryTrafficAdapter {
+        val id = config.trafficAdapter ?: if (config.canaryRoute != null) "gateway-api" else null
+        return adapters[id] ?: throw DeploymentValidationException("CANARY requires a configured traffic adapter; available: ${adapters.keys}")
+    }
     private val client = deploymentClient(client)
-    private val routeContext = ResourceDefinitionContext.Builder().withGroup("gateway.networking.k8s.io")
-        .withVersion("v1").withPlural("httproutes").withKind("HTTPRoute").withNamespaced(true).build()
-
     fun authorize(principal: String, app: DeploymentApplication, config: DeploymentConfiguration) {
         val permissions = if (app.kind == ApplicationKind.BATCH) {
-            listOf(Triple("batch", "cronjobs", listOf("get", "update")))
+            listOf(ResourcePermission("batch", "cronjobs", listOf("get", "update")))
         } else if (config.webStrategy == WebDeploymentStrategy.ROLLING) {
-            listOf(Triple("apps", "deployments", listOf("get", "update")))
+            listOf(ResourcePermission("apps", "deployments", listOf("get", "update")))
         } else {
-            listOf(Triple("apps", "deployments", listOf("get", "create", "update")),
-                Triple("", "services", listOf("get", "list", "create", "update")),
-                Triple("discovery.k8s.io", "endpointslices", listOf("list"))) +
-                if (config.webStrategy == WebDeploymentStrategy.CANARY) listOf(Triple("gateway.networking.k8s.io", "httproutes", listOf("get", "update"))) else emptyList()
+            listOf(ResourcePermission("apps", "deployments", listOf("get", "create", "update")),
+                ResourcePermission("", "services", listOf("get", "list", "create", "update")),
+                ResourcePermission("discovery.k8s.io", "endpointslices", listOf("list"))) +
+                if (config.webStrategy == WebDeploymentStrategy.CANARY) traffic(config).permissions else emptyList()
         }
-        permissions.forEach { (group, resource, verbs) -> verbs.forEach { verb ->
-            val review = SubjectAccessReviewBuilder().withNewSpec().withUser(principal)
-                .withNewResourceAttributes().withNamespace(app.namespace).withGroup(group)
-                .withResource(resource).withVerb(verb).endResourceAttributes().endSpec().build()
-            if (client.authorization().v1().subjectAccessReview().create(review).status?.allowed != true) throw DeploymentForbiddenException()
-        } }
+        authorization.authorize(principal, app.namespace, permissions)
     }
 
     fun snapshot(app: DeploymentApplication, config: DeploymentConfiguration): DeploymentSnapshot {
@@ -58,19 +67,8 @@ class KubernetesDeploymentWorkloads(client: KubernetesClient) {
         }
         val key = source.spec.selector.matchLabels.orEmpty().keys.firstOrNull { it in service.spec.selector }
             ?: throw DeploymentValidationException("Service and Deployment need a shared matchLabels key to isolate the new version")
-        val route = if (config.webStrategy == WebDeploymentStrategy.CANARY) {
-            route(app.namespace, requireNotNull(config.canaryRoute)).also { current ->
-                val rules = rules(current)
-                if (rules.size != 1 || parentRefs(current).size != 1) throw DeploymentValidationException("canary HTTPRoute must have exactly one rule and one parent")
-                val refs = refs(current)
-                if (refs.size != 1 || refs[0]["name"] != app.serviceName || (refs[0]["namespace"] ?: app.namespace) != app.namespace ||
-                    (refs[0]["kind"] ?: "Service") != "Service" || (refs[0]["group"] ?: "") != "" || refs[0]["port"] == null) {
-                    throw DeploymentValidationException("HTTPRoute must point only to the production Service in this namespace")
-                }
-                if (!routeReady(current)) throw DeploymentConflictException("HTTPRoute must be Accepted with ResolvedRefs")
-            }
-        } else null
-        return DeploymentSnapshot(claim(source, app.id), claim(service, app.id), route?.let { claim(it, app.id) }, isolationKey = key)
+        val trafficSnapshot = if (config.webStrategy == WebDeploymentStrategy.CANARY) traffic(config).capture(app, config) else null
+        return DeploymentSnapshot(claim(source, app.id), claim(service, app.id), isolationKey = key, traffic = trafficSnapshot)
     }
 
     fun createPreview(app: DeploymentApplication, config: DeploymentConfiguration, run: DeploymentRun): DeploymentExecutionResult {
@@ -172,24 +170,10 @@ class KubernetesDeploymentWorkloads(client: KubernetesClient) {
         client.services().inNamespace(app.namespace).resource(current).lockResourceVersion(current.metadata.resourceVersion).update()
     }
 
-    fun setCanaryWeight(app: DeploymentApplication, config: DeploymentConfiguration, run: DeploymentRun, weight: Int?) {
-        val original = requireNotNull(run.snapshot?.route)
-        val current = route(app.namespace, requireNotNull(config.canaryRoute))
-        requireUid(current.metadata.uid, original.metadata.uid)
-        val stable = refs(original).single().toMutableMap()
-        val desired = if (weight == null) listOf(stable) else listOf(
-            stable + ("weight" to 100 - weight), stable + mapOf("name" to previewName(run), "weight" to weight),
-        )
-        val existing = refs(current)
-        if (existing == desired) return
-        val allowed = existing == refs(original) || (existing.size == 2 && existing[0].filterKeys { it != "weight" } == stable.filterKeys { it != "weight" } &&
-            existing[1].filterKeys { it != "weight" && it != "name" } == stable.filterKeys { it != "weight" && it != "name" } && existing[1]["name"] == previewName(run))
-        if (!allowed) throw DeploymentConflictException("HTTPRoute backends changed outside this run")
-        rules(current).single()["backendRefs"] = desired
-        routes(app.namespace).resource(current).lockResourceVersion(current.metadata.resourceVersion).update()
-    }
+    fun setCanaryWeight(app: DeploymentApplication, config: DeploymentConfiguration, run: DeploymentRun, weight: Int?) =
+        traffic(config).setWeight(app, config, run, weight)
 
-    fun canaryRouteReady(app: DeploymentApplication, config: DeploymentConfiguration) = routeReady(route(app.namespace, requireNotNull(config.canaryRoute)))
+    fun canaryRouteReady(app: DeploymentApplication, config: DeploymentConfiguration) = traffic(config).isReady(app, config)
 
     fun updateBatch(app: DeploymentApplication, config: DeploymentConfiguration, run: DeploymentRun, restore: Boolean = false) {
         requireNotNull(run.snapshot).cronJobs.forEach { original ->
@@ -252,38 +236,6 @@ class KubernetesDeploymentWorkloads(client: KubernetesClient) {
         return replicas > 0 && (value.status?.observedGeneration ?: -1) >= (value.metadata.generation ?: 0) &&
             value.status?.updatedReplicas == replicas && value.status?.availableReplicas == replicas && value.status?.replicas == replicas
     }
-
-    private fun routes(namespace: String) = client.genericKubernetesResources(routeContext).inNamespace(namespace)
-    private fun route(namespace: String, name: String) = routes(namespace).withName(name).get()
-        ?: throw DeploymentValidationException("HTTPRoute '$name' does not exist")
-
-    @Suppress("UNCHECKED_CAST")
-    private fun rules(route: GenericKubernetesResource): List<MutableMap<String, Any>> =
-        (route.additionalProperties["spec"] as Map<String, Any>)["rules"] as List<MutableMap<String, Any>>
-
-    @Suppress("UNCHECKED_CAST")
-    private fun refs(route: GenericKubernetesResource): List<Map<String, Any>> = rules(route).single()["backendRefs"] as List<Map<String, Any>>
-
-    @Suppress("UNCHECKED_CAST")
-    private fun routeReady(route: GenericKubernetesResource): Boolean {
-        val parents = (route.additionalProperties["status"] as? Map<String, Any>)?.get("parents") as? List<Map<String, Any>> ?: return false
-        val expected = parentRefs(route).singleOrNull() ?: return false
-        val matching = parents.filter { parent ->
-            val ref = parent["parentRef"] as? Map<String, Any> ?: return@filter false
-            ref["name"] == expected["name"] && ref["sectionName"] == expected["sectionName"] && ref["port"] == expected["port"] &&
-                (ref["namespace"] ?: route.metadata.namespace) == (expected["namespace"] ?: route.metadata.namespace)
-        }
-        return matching.isNotEmpty() && matching.all { parent ->
-            val conditions = parent["conditions"] as? List<Map<String, Any>> ?: return@all false
-            listOf("Accepted", "ResolvedRefs").all { type -> conditions.any {
-                it["type"] == type && it["status"] == "True" && (it["observedGeneration"] as? Number)?.toLong() == route.metadata.generation
-            } }
-        }
-    }
-
-    @Suppress("UNCHECKED_CAST")
-    private fun parentRefs(route: GenericKubernetesResource): List<Map<String, Any>> =
-        (route.additionalProperties["spec"] as Map<String, Any>)["parentRefs"] as? List<Map<String, Any>> ?: emptyList()
 
     private fun requireOwned(labels: Map<String, String>?, run: DeploymentRun) {
         if (labels?.get(RUN_LABEL) != run.id) throw DeploymentConflictException("resource name is already owned by another workload")

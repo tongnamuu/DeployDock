@@ -11,12 +11,21 @@ API 호출과 preview 접속 명령은 [운영 및 테스트 절차](DEPLOYMENTS
 
 | 순서 | 파일 | 먼저 볼 코드 | 역할 |
 |---|---|---|---|
-| 1 | [DeploymentModels.kt](src/main/kotlin/com/deploy/k8s/DeployDock/deployment/DeploymentModels.kt) | `DeploymentConfiguration`, `DeploymentRun` | 저장할 설정과 실행 상태의 모양을 정의한다. |
+| 1 | [DeploymentModels.kt](deployment-library/src/main/kotlin/com/deploy/k8s/DeployDock/deployment/DeploymentModels.kt) | `DeploymentConfiguration`, `DeploymentRun` | 저장할 설정과 실행 상태의 모양을 정의한다. |
 | 2 | [DeploymentController.kt](src/main/kotlin/com/deploy/k8s/DeployDock/deployment/DeploymentController.kt) | `submitRun()`, `action()` | HTTP 요청과 JWT 사용자를 Service에 전달한다. |
-| 3 | [DeploymentService.kt](src/main/kotlin/com/deploy/k8s/DeployDock/deployment/DeploymentService.kt) | `submitRun()`, `action()` | 권한·입력·중복 요청을 확인하고 실행 또는 승인 요청을 저장한다. |
-| 4 | [DeploymentExecution.kt](src/main/kotlin/com/deploy/k8s/DeployDock/deployment/DeploymentExecution.kt) | `dispatch()`, `reconcile()`, `advance()` | 실행을 시작하고 현재 단계에 맞는 작업을 선택한다. |
-| 5 | [KubernetesDeploymentWorkloads.kt](src/main/kotlin/com/deploy/k8s/DeployDock/deployment/KubernetesDeploymentWorkloads.kt) | `createPreview()`, `switchService()`, `setCanaryWeight()` | Fabric8 클라이언트로 실제 Kubernetes 리소스를 읽고 변경한다. |
-| 6 | [DeploymentStore.kt](src/main/kotlin/com/deploy/k8s/DeployDock/deployment/DeploymentStore.kt) | `KubernetesDeploymentStore.update()` | 앱별 ConfigMap에 설정·실행·복구 스냅샷을 저장한다. |
+| 3 | [DeploymentService.kt](src/main/kotlin/com/deploy/k8s/DeployDock/deployment/DeploymentService.kt) | `submitRun()`, `action()` | 서버의 namespace 접근을 검사하고 라이브러리 호출을 Reactor로 감싼다. |
+| 4 | [DeploymentExecution.kt](src/main/kotlin/com/deploy/k8s/DeployDock/deployment/DeploymentExecution.kt) | `dispatch()`, `deploy()` | 서버 주기 실행과 Temporal을 공통 실행기에 연결한다. |
+| 5 | [KubernetesDeploymentWorkloads.kt](deployment-library/src/main/kotlin/com/deploy/k8s/DeployDock/deployment/KubernetesDeploymentWorkloads.kt) | `createPreview()`, `switchService()`, `setCanaryWeight()` | Fabric8 클라이언트로 실제 Kubernetes 리소스를 읽고 변경한다. |
+| 6 | [DeploymentStore.kt](deployment-library/src/main/kotlin/com/deploy/k8s/DeployDock/deployment/DeploymentStore.kt) | `KubernetesDeploymentStore.update()` | 앱별 ConfigMap에 설정·실행·복구 스냅샷을 저장한다. |
+| 7 | [DeploymentClient.kt](deployment-library/src/main/kotlin/com/deploy/k8s/DeployDock/deployment/DeploymentClient.kt) | `saveConfiguration()`, `submitRun()`, `action()` | Spring 없이 입력·중복·실행 조건을 검사한다. |
+| 8 | [DeploymentReconciler.kt](deployment-library/src/main/kotlin/com/deploy/k8s/DeployDock/deployment/DeploymentReconciler.kt) | `reconcile()`, `advance()` | 현재 단계에 맞는 작업을 선택한다. |
+| 9 | [TrafficAdapter.kt](deployment-library/src/main/kotlin/com/deploy/k8s/DeployDock/deployment/TrafficAdapter.kt) | `CanaryTrafficAdapter`, `DeploymentAuthorization` | 환경별 트래픽 제어와 권한 정책 계약이다. |
+| 10 | [GatewayApiTrafficAdapter.kt](deployment-gateway-api/src/main/kotlin/com/deploy/k8s/DeployDock/deployment/GatewayApiTrafficAdapter.kt) | `capture()`, `setWeight()`, `isReady()` | 선택형 모듈에서 HTTPRoute를 처리한다. |
+
+핵심 모듈은 `deployment-library`이며 Spring·Reactor·Temporal을 참조하지 않는다.
+서버를 거치지 않고 `DeploymentClient`와 `DeploymentReconciler`를 직접 사용해도 같은 실행 로직을 거친다.
+[독립 호출 예제와 어댑터 계약](deployment-library/README.md)을 참고한다.
+`DeploymentBeans`가 서버에서 저장소·권한·어댑터를 연결하며 Gateway 어댑터는 설정으로 켰을 때만 등록한다.
 
 `Service`라는 이름에 주의한다. `KubernetesDeploymentService`는 Spring의 업무 처리 클래스이고,
 `KubernetesDeploymentWorkloads` 안의 Kubernetes `Service`는 Pod로 트래픽을 보내는 클러스터 리소스다.
@@ -48,7 +57,8 @@ API 호출과 preview 접속 명령은 [운영 및 테스트 절차](DEPLOYMENTS
 flowchart TD
     API["POST /runs"] --> Controller["DeploymentController.submitRun"]
     Controller --> Service["KubernetesDeploymentService.submitRun"]
-    Service --> Store["ConfigMap에 QUEUED 실행 저장"]
+    Service --> Client["DeploymentClient.submitRun"]
+    Client --> Store["ConfigMap에 QUEUED 실행 저장"]
     Store --> Response["HTTP 202 응답"]
     Dispatch["DeploymentRunOrchestrators.dispatch"] --> Read["미완료 실행 조회"]
     Read --> Local["LOCAL: reconcile 호출"]
@@ -113,10 +123,12 @@ EndpointSlice 대상은 Pod 이름의 Deployment 접두사로 확인한다. 이 
 ## 5. 카나리에서 추가되는 코드
 
 카나리도 신규 Pod와 preview를 먼저 만들고 `APPROVAL`에서 기다린다.
-`DeploymentService.action()`이 `ADVANCE`를 저장하면 다음 `advance()` 호출이
+`DeploymentClient.action()`이 `ADVANCE`를 저장하면 다음 `advance()` 호출이
 `step`을 올리고 `ROUTE` 단계로 이동한다.
 
-`canarySteps=[10, 50]`인 경우 첫 단계에서 `setCanaryWeight()`는 운영 Service backend에
+`KubernetesDeploymentWorkloads`는 HTTPRoute를 직접 다루지 않고 등록된 어댑터에 위임한다.
+어댑터가 없으면 가중치 카나리 설정을 거부하며, 롤링·블루그린·배치에는 영향이 없다.
+다음은 선택형 Gateway 어댑터의 동작이다. `canarySteps=[10, 50]`인 경우 첫 단계에서 `setCanaryWeight()`는 운영 Service backend에
 90, preview backend에 10을 넣는다. 다음 단계는 50과 50이다. `routeReady()`가 해당
 parent의 최신 generation에 대한 `Accepted`와 `ResolvedRefs`를 확인해야 다시 승인 대기로 돌아간다.
 
@@ -139,7 +151,7 @@ HTTPRoute backend를 원래 운영 Service 하나로 되돌리고 반영을 기�
 |---|---|
 | `restoreRolling()` | 원본 Deployment의 지정 컨테이너 이미지와 replica 수를 스냅샷 값으로 복원한다. |
 | `switchService(..., restore=true)` | 운영 Service의 selector를 원래 값으로 복원한다. |
-| `setCanaryWeight(..., null)` | HTTPRoute backend를 스냅샷 값으로 복원한다. |
+| `setCanaryWeight(..., null)` | 어댑터에 원래 트래픽 설정 복원을 요청한다. Gateway 구현은 HTTPRoute backend를 복원한다. |
 | `RESTORE_WAIT` | 원본 준비와 필요한 Service/Route 반영을 확인한 뒤 preview를 0개로 줄인다. |
 | `error` | 원래 배포 실패 이유다. 복구가 끝나도 실패 이력으로 남는다. |
 | `recoveryError` | 복구 자체가 막힌 이유다. `ABORTING` 상태에서 재시도하며 복구 완료 시 지운다. |
@@ -178,6 +190,7 @@ ConfigMap 저장과 워크로드 변경은 하나의 트랜잭션이 아니다. 
 
 | 확인하려는 동작 | 읽을 테스트 |
 |---|---|
+| 서버 없는 실행과 사용자 정의 트래픽 어댑터 | [StandaloneDeploymentTests.kt](deployment-library/src/test/kotlin/com/deploy/k8s/DeployDock/deployment/StandaloneDeploymentTests.kt) |
 | preview 격리, 승인 전 전환 거부, 원본 복귀, 롤백 | [DeploymentExecutionTests.kt](src/test/kotlin/com/deploy/k8s/DeployDock/deployment/DeploymentExecutionTests.kt)의 `blue green isolates preview...` |
 | 카나리 단계 승인·중복 방지·Route 반영 대기 | 같은 파일의 `canary waits for each approval...`, `canary promotion restores...` |
 | 원본 갱신 중 중단, 외부 Service 변경 충돌 | 같은 파일의 `abort while original is updating...`, `external Service selector change...` |
@@ -187,5 +200,5 @@ ConfigMap 저장과 워크로드 변경은 하나의 트랜잭션이 아니다. 
 
 일반 테스트는 mock API 서버의 상태를 테스트 코드에서 갱신하므로 실제 Kubernetes controller나
 Gateway 데이터 경로까지 검증하지 않는다. 실 클러스터 테스트는 별도 환경변수가 있어야 실행된다.
-제품 코드 변경 시점의 결과는 자동 테스트 25개 통과, 실 클러스터 테스트 1개 미실행이며,
-이 코드 설명 문서 추가로 테스트를 다시 실행하지는 않았다.
+라이브러리 분리 후 자동 테스트 29개 통과, 실 클러스터 테스트 1개 미실행을 확인했다.
+모든 Kubernetes 환경에서 실행을 검증했다는 의미는 아니다.

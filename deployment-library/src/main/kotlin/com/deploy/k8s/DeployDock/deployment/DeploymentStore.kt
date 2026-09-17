@@ -1,12 +1,10 @@
 package com.deploy.k8s.DeployDock.deployment
 
-import com.deploy.k8s.DeployDock.config.DeployDockKubernetesProperties
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import io.fabric8.kubernetes.api.model.ConfigMapBuilder
 import io.fabric8.kubernetes.client.KubernetesClient
-import org.springframework.stereotype.Repository
 import java.time.Instant
 import java.util.UUID
 
@@ -24,14 +22,13 @@ interface DeploymentStore {
     fun update(id: String, operation: (DeploymentRecord) -> DeploymentRecord): DeploymentRecord
 }
 
-@Repository
 class KubernetesDeploymentStore(
     client: KubernetesClient,
-    private val properties: DeployDockKubernetesProperties,
+    private val controlNamespace: String = "deploydock-system",
 ) : DeploymentStore {
     private val client = deploymentClient(client)
     private val mapper = deploymentMapper()
-    private fun maps() = client.configMaps().inNamespace(properties.controlNamespace)
+    private fun maps() = client.configMaps().inNamespace(controlNamespace)
     private fun decode(value: String) = mapper.readValue(value, DeploymentRecord::class.java)
 
     override fun create(record: DeploymentRecord): DeploymentRecord {
