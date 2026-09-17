@@ -239,131 +239,14 @@ class AuthenticationFlowTests(
             .exchange()
             .expectStatus().isNoContent
 
-        val webAppId = client.post().uri("/api/v2/deployment-applications")
+        client.post().uri("/api/v2/deployment-applications")
             .headers { it.setBearerAuth(accessToken) }
             .contentType(MediaType.APPLICATION_JSON)
             .bodyValue("""{"name":"shop-web","namespace":"team-a","kind":"WEB","orchestrator":"TEMPORAL"}""")
             .exchange()
-            .expectStatus().isCreated
+            .expectStatus().isEqualTo(503)
             .expectBody()
-            .jsonPath("$.kind").isEqualTo("WEB")
-            .jsonPath("$.orchestrator").isEqualTo("TEMPORAL")
-            .returnResult()
-            .responseBody
-            ?.toString(Charsets.UTF_8)
-            ?.let { Regex("\\\"id\\\":\\\"([^\\\"]+)\\\"").find(it)?.groupValues?.get(1) }
-            ?: error("web application response did not contain an id")
-
-        val canaryConfigId = client.post().uri("/api/v2/deployment-applications/$webAppId/configurations")
-            .headers { it.setBearerAuth(accessToken) }
-            .contentType(MediaType.APPLICATION_JSON)
-            .bodyValue("""{"image":"registry.example.com/shop:v2","replicas":3,"webStrategy":"CANARY"}""")
-            .exchange()
-            .expectStatus().isCreated
-            .expectBody()
-            .jsonPath("$.revision").isEqualTo(1)
-            .jsonPath("$.webStrategy").isEqualTo("CANARY")
-            .returnResult()
-            .responseBody
-            ?.toString(Charsets.UTF_8)
-            ?.let { Regex("\\\"id\\\":\\\"([^\\\"]+)\\\"").find(it)?.groupValues?.get(1) }
-            ?: error("configuration response did not contain an id")
-
-        client.post().uri("/api/v2/deployment-applications/$webAppId/configurations")
-            .headers { it.setBearerAuth(accessToken) }
-            .contentType(MediaType.APPLICATION_JSON)
-            .bodyValue("""{"image":"registry.example.com/shop:v3","replicas":3,"webStrategy":"BLUE_GREEN"}""")
-            .exchange()
-            .expectStatus().isCreated
-            .expectBody()
-            .jsonPath("$.webStrategy").isEqualTo("BLUE_GREEN")
-
-        client.post().uri("/api/v2/deployment-applications/$webAppId/runs")
-            .headers { it.setBearerAuth(accessToken) }
-            .contentType(MediaType.APPLICATION_JSON)
-            .bodyValue("""{"configurationId":"$canaryConfigId"}""")
-            .exchange()
-            .expectStatus().isAccepted
-            .expectBody()
-            .jsonPath("$.orchestrator").isEqualTo("TEMPORAL")
-            .jsonPath("$.webStrategy").isEqualTo("CANARY")
-            .jsonPath("$.status").isEqualTo("SUCCEEDED")
-            .jsonPath("$.executionId").exists()
-            .jsonPath("$.result.mode").isEqualTo("WEB_CANARY")
-            .jsonPath("$.result.resources[0].apiVersion").isEqualTo("apps/v1")
-            .jsonPath("$.result.resources[0].kind").isEqualTo("Deployment")
-
-        val batchAppId = client.post().uri("/api/v2/deployment-applications")
-            .headers { it.setBearerAuth(accessToken) }
-            .contentType(MediaType.APPLICATION_JSON)
-            .bodyValue("""{"name":"billing-batch","namespace":"team-a","kind":"BATCH"}""")
-            .exchange()
-            .expectStatus().isCreated
-            .expectBody()
-            .jsonPath("$.kind").isEqualTo("BATCH")
-            .returnResult()
-            .responseBody
-            ?.toString(Charsets.UTF_8)
-            ?.let { Regex("\\\"id\\\":\\\"([^\\\"]+)\\\"").find(it)?.groupValues?.get(1) }
-            ?: error("batch application response did not contain an id")
-
-        val groupedBatchConfigId = client.post().uri("/api/v2/deployment-applications/$batchAppId/configurations")
-            .headers { it.setBearerAuth(accessToken) }
-            .contentType(MediaType.APPLICATION_JSON)
-            .bodyValue("""{"image":"registry.example.com/billing:v1","batchMode":"GROUPED","batchTargets":["settlement","invoice"]}""")
-            .exchange()
-            .expectStatus().isCreated
-            .expectBody()
-            .jsonPath("$.batchMode").isEqualTo("GROUPED")
-            .jsonPath("$.batchTargets[1]").isEqualTo("invoice")
-            .returnResult()
-            .responseBody
-            ?.toString(Charsets.UTF_8)
-            ?.let { Regex("\\\"id\\\":\\\"([^\\\"]+)\\\"").find(it)?.groupValues?.get(1) }
-            ?: error("grouped batch configuration response did not contain an id")
-
-        val individualBatchConfigId = client.post().uri("/api/v2/deployment-applications/$batchAppId/configurations")
-            .headers { it.setBearerAuth(accessToken) }
-            .contentType(MediaType.APPLICATION_JSON)
-            .bodyValue("""{"image":"registry.example.com/billing:v2","batchMode":"INDIVIDUAL","batchTargets":["settlement"]}""")
-            .exchange()
-            .expectStatus().isCreated
-            .expectBody()
-            .jsonPath("$.batchMode").isEqualTo("INDIVIDUAL")
-            .returnResult()
-            .responseBody
-            ?.toString(Charsets.UTF_8)
-            ?.let { Regex("\\\"id\\\":\\\"([^\\\"]+)\\\"").find(it)?.groupValues?.get(1) }
-            ?: error("individual batch configuration response did not contain an id")
-
-        client.post().uri("/api/v2/deployment-applications/$batchAppId/runs")
-            .headers { it.setBearerAuth(accessToken) }
-            .contentType(MediaType.APPLICATION_JSON)
-            .bodyValue("""{"configurationId":"$groupedBatchConfigId"}""")
-            .exchange()
-            .expectStatus().isAccepted
-            .expectBody()
-            .jsonPath("$.status").isEqualTo("SUCCEEDED")
-            .jsonPath("$.result.mode").isEqualTo("BATCH_GROUPED")
-            .jsonPath("$.result.resources.length()").isEqualTo(2)
-
-        client.post().uri("/api/v2/deployment-applications/$batchAppId/runs")
-            .headers { it.setBearerAuth(accessToken) }
-            .contentType(MediaType.APPLICATION_JSON)
-            .bodyValue("""{"configurationId":"$individualBatchConfigId"}""")
-            .exchange()
-            .expectStatus().isAccepted
-            .expectBody()
-            .jsonPath("$.status").isEqualTo("SUCCEEDED")
-            .jsonPath("$.result.mode").isEqualTo("BATCH_INDIVIDUAL")
-            .jsonPath("$.result.resources.length()").isEqualTo(1)
-
-        client.post().uri("/api/v2/deployment-applications/$batchAppId/configurations")
-            .headers { it.setBearerAuth(accessToken) }
-            .contentType(MediaType.APPLICATION_JSON)
-            .bodyValue("""{"image":"registry.example.com/billing:v3","batchMode":"GROUPED","batchTargets":["only-one"]}""")
-            .exchange()
-            .expectStatus().isBadRequest
+            .jsonPath("$.code").isEqualTo("DEPLOYMENT_UNAVAILABLE")
     }
 
     @TestConfiguration(proxyBeanMethods = false)

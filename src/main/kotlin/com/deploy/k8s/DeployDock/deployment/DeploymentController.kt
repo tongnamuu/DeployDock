@@ -51,12 +51,21 @@ class DeploymentController(private val deployments: DeploymentProvider) {
         @PathVariable applicationId: String,
         @RequestBody request: SubmitDeploymentRunRequest,
     ): Mono<DeploymentRun> =
-        deployments.submitRun(requireNotNull(jwt.subject), applicationId, request)
+        deployments.submitRun(requireNotNull(jwt.subject), applicationId, request).map { it.copy(snapshot = null) }
 
     @GetMapping("/{applicationId}/runs")
     fun runs(
         @AuthenticationPrincipal jwt: Jwt,
         @PathVariable applicationId: String,
     ): Mono<List<DeploymentRun>> =
-        deployments.runs(requireNotNull(jwt.subject), applicationId)
+        deployments.runs(requireNotNull(jwt.subject), applicationId).map { runs -> runs.map { it.copy(snapshot = null) } }
+
+    @PostMapping("/{applicationId}/runs/{runId}/actions")
+    @ResponseStatus(HttpStatus.ACCEPTED)
+    fun action(
+        @AuthenticationPrincipal jwt: Jwt,
+        @PathVariable applicationId: String,
+        @PathVariable runId: String,
+        @RequestBody request: DeploymentActionRequest,
+    ): Mono<DeploymentRun> = deployments.action(requireNotNull(jwt.subject), applicationId, runId, request.action, request.requestId).map { it.copy(snapshot = null) }
 }

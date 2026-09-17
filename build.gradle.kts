@@ -26,6 +26,7 @@ dependencies {
 	implementation("org.springframework.security:spring-security-oauth2-resource-server")
 	implementation("io.fabric8:kubernetes-client:7.8.0")
 	implementation("io.temporal:temporal-sdk:1.39.0")
+	implementation("com.fasterxml.jackson.module:jackson-module-kotlin:2.21.2")
 	implementation("io.projectreactor.kotlin:reactor-kotlin-extensions")
 	implementation("org.jetbrains.kotlin:kotlin-reflect")
 	implementation("org.jetbrains.kotlinx:kotlinx-coroutines-reactor")
@@ -34,6 +35,8 @@ dependencies {
 	testImplementation("org.springframework.security:spring-security-test")
 	testImplementation("org.jetbrains.kotlin:kotlin-test-junit5")
 	testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test")
+	testImplementation("io.fabric8:kubernetes-server-mock:7.8.0")
+	testImplementation("io.temporal:temporal-testing:1.39.0")
 	testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }
 

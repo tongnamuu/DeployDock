@@ -33,6 +33,21 @@ data class ApiError(val code: String, val message: String)
 
 @RestControllerAdvice
 class ApiExceptionHandler {
+    @ExceptionHandler(io.fabric8.kubernetes.client.KubernetesClientException::class)
+    fun kubernetesRequestFailure(exception: io.fabric8.kubernetes.client.KubernetesClientException): org.springframework.http.ResponseEntity<ApiError> =
+        if (exception.code == 409) org.springframework.http.ResponseEntity.status(HttpStatus.CONFLICT)
+            .body(ApiError("RESOURCE_CONFLICT", "resource exists or changed; retry with the same requestId"))
+        else org.springframework.http.ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+            .body(ApiError("KUBERNETES_UNAVAILABLE", "Kubernetes request failed"))
+
+    @ExceptionHandler(com.deploy.k8s.DeployDock.deployment.DeploymentConflictException::class)
+    @ResponseStatus(HttpStatus.CONFLICT)
+    fun deploymentConflict(exception: RuntimeException) = ApiError("DEPLOYMENT_CONFLICT", exception.message ?: "deployment conflict")
+
+    @ExceptionHandler(com.deploy.k8s.DeployDock.deployment.DeploymentUnavailableException::class)
+    @ResponseStatus(HttpStatus.SERVICE_UNAVAILABLE)
+    fun deploymentUnavailable(exception: RuntimeException) = ApiError("DEPLOYMENT_UNAVAILABLE", exception.message ?: "deployment unavailable")
+
     @ExceptionHandler(DuplicateUserException::class)
     @ResponseStatus(HttpStatus.CONFLICT)
     fun duplicateUser(exception: DuplicateUserException) =

@@ -3,189 +3,148 @@ package com.deploy.k8s.DeployDock.deployment
 import com.deploy.k8s.DeployDock.kubernetes.NamespaceAccessProvider
 import org.springframework.stereotype.Service
 import reactor.core.publisher.Mono
+import reactor.core.scheduler.Schedulers
 import java.time.Clock
 import java.util.UUID
-import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.atomic.AtomicInteger
 
 interface DeploymentProvider {
     fun registerApplication(principal: String, request: RegisterApplicationRequest): Mono<DeploymentApplication>
     fun applications(principal: String): Mono<List<DeploymentApplication>>
-    fun saveConfiguration(
-        principal: String,
-        applicationId: String,
-        request: SaveDeploymentConfigurationRequest,
-    ): Mono<DeploymentConfiguration>
+    fun saveConfiguration(principal: String, applicationId: String, request: SaveDeploymentConfigurationRequest): Mono<DeploymentConfiguration>
     fun configurations(principal: String, applicationId: String): Mono<List<DeploymentConfiguration>>
     fun submitRun(principal: String, applicationId: String, request: SubmitDeploymentRunRequest): Mono<DeploymentRun>
     fun runs(principal: String, applicationId: String): Mono<List<DeploymentRun>>
+    fun action(principal: String, applicationId: String, runId: String, action: DeploymentAction, requestId: String = UUID.randomUUID().toString()): Mono<DeploymentRun>
 }
 
 @Service
-class InMemoryDeploymentService(
+class KubernetesDeploymentService(
     private val namespaces: NamespaceAccessProvider,
+    private val store: DeploymentStore,
     private val orchestrators: DeploymentRunOrchestrators,
+    private val workloads: KubernetesDeploymentWorkloads,
     private val clock: Clock,
 ) : DeploymentProvider {
-    private val applications = ConcurrentHashMap<String, DeploymentApplication>()
-    private val configurations = ConcurrentHashMap<String, DeploymentConfiguration>()
-    private val revisionSequences = ConcurrentHashMap<String, AtomicInteger>()
-    private val runs = ConcurrentHashMap<String, DeploymentRun>()
+    override fun registerApplication(principal: String, request: RegisterApplicationRequest): Mono<DeploymentApplication> =
+        access(principal, request.namespace).then(Mono.fromCallable {
+            orchestrators.requireAvailable(request.orchestrator)
+            val id = "app-" + UUID.nameUUIDFromBytes("${request.namespace}/${request.name}".toByteArray())
+            val app = DeploymentApplication(id, request.name, request.namespace, request.kind, request.orchestrator,
+                principal, clock.instant(), request.serviceName ?: request.name, request.containerName)
+            store.create(DeploymentRecord(app)).application
+        }.subscribeOn(Schedulers.boundedElastic()))
 
-    override fun registerApplication(
-        principal: String,
-        request: RegisterApplicationRequest,
-    ): Mono<DeploymentApplication> =
-        requireNamespaceAccess(principal, request.namespace).map {
-            val app = DeploymentApplication(
-                id = newId("app"),
-                name = request.name,
-                namespace = request.namespace,
-                kind = request.kind,
-                orchestrator = request.orchestrator,
-                createdBy = principal,
-                createdAt = clock.instant(),
-            )
-            applications[app.id] = app
-            app
+    override fun applications(principal: String): Mono<List<DeploymentApplication>> = namespaces.findAccessible(principal)
+        .flatMap { visible -> Mono.fromCallable {
+            store.list().map { it.application }.filter { app -> visible.any { it.name == app.namespace } }
+        }.subscribeOn(Schedulers.boundedElastic()) }
+
+    override fun saveConfiguration(principal: String, applicationId: String, request: SaveDeploymentConfigurationRequest): Mono<DeploymentConfiguration> =
+        authorized(principal, applicationId) {
+            store.update(applicationId) { record ->
+                validate(record.application, request)
+                val config = DeploymentConfiguration(newId("cfg"), applicationId,
+                    (record.configurations.maxOfOrNull { it.revision } ?: 0) + 1,
+                    request.image.trim(), request.replicas, request.webStrategy, request.batchMode,
+                    request.batchTargets, principal, clock.instant(), request.canaryRoute,
+                    request.canarySteps, request.progressDeadlineSeconds)
+                record.copy(configurations = record.configurations + config)
+            }.configurations.last()
         }
 
-    override fun applications(principal: String): Mono<List<DeploymentApplication>> =
-        namespaces.findAccessible(principal).map { visible ->
-            val names = visible.map { it.name }.toSet()
-            applications.values.filter { it.namespace in names }.sortedBy { it.name }
+    override fun configurations(principal: String, applicationId: String): Mono<List<DeploymentConfiguration>> =
+        authorized(principal, applicationId) { it.configurations }
+
+    override fun submitRun(principal: String, applicationId: String, request: SubmitDeploymentRunRequest): Mono<DeploymentRun> =
+        authorized(principal, applicationId) {
+            if (request.requestId.isBlank() || request.requestId.length > 128) throw DeploymentValidationException("requestId must contain 1 to 128 characters")
+            store.update(applicationId) { record ->
+                val existing = record.runs.find { it.requestId == request.requestId }
+                if (existing != null) {
+                    if (existing.configurationId != request.configurationId) throw DeploymentConflictException("requestId already belongs to a different configuration")
+                    return@update record
+                }
+                if (record.runs.any { !it.terminal() }) throw DeploymentConflictException("application already has an active run")
+                val config = record.configurations.find { it.id == request.configurationId }
+                    ?: throw DeploymentConfigurationNotFoundException(request.configurationId)
+                val app = record.application
+                orchestrators.requireAvailable(app.orchestrator)
+                workloads.authorize(principal, app, config)
+                val id = newId("run")
+                val run = DeploymentRun(id, app.id, config.id, app.kind, app.orchestrator, config.webStrategy,
+                    config.batchMode, config.batchTargets, DeploymentRunStatus.QUEUED, principal, clock.instant(),
+                    executionId = "deploydock-$id", requestId = request.requestId)
+                record.copy(runs = record.runs + run)
+            }.runs.first { it.requestId == request.requestId }
         }
 
-    override fun saveConfiguration(
-        principal: String,
-        applicationId: String,
-        request: SaveDeploymentConfigurationRequest,
-    ): Mono<DeploymentConfiguration> {
-        val app = application(applicationId)
-        validateConfiguration(app, request)
-        return requireNamespaceAccess(principal, app.namespace).map {
-            val config = DeploymentConfiguration(
-                id = newId("cfg"),
-                applicationId = app.id,
-                revision = revisionSequences.computeIfAbsent(app.id) { AtomicInteger() }.incrementAndGet(),
-                image = request.image.trim(),
-                replicas = request.replicas,
-                webStrategy = request.webStrategy,
-                batchMode = request.batchMode,
-                batchTargets = request.batchTargets.map { it.trim() },
-                savedBy = principal,
-                savedAt = clock.instant(),
-            )
-            configurations[config.id] = config
-            config
+    override fun runs(principal: String, applicationId: String): Mono<List<DeploymentRun>> =
+        authorized(principal, applicationId) { it.runs }
+
+    override fun action(principal: String, applicationId: String, runId: String, action: DeploymentAction, requestId: String): Mono<DeploymentRun> =
+        authorized(principal, applicationId) {
+            if (requestId.isBlank() || requestId.length > 128) throw DeploymentValidationException("requestId must contain 1 to 128 characters")
+            store.update(applicationId) { record ->
+                val run = record.runs.find { it.id == runId } ?: throw DeploymentValidationException("run does not exist")
+                val config = record.configurations.first { it.id == run.configurationId }
+                workloads.authorize(principal, record.application, config)
+                val previous = run.actionRequests[requestId]
+                if (previous != null) {
+                    if (previous != action) throw DeploymentConflictException("requestId already belongs to a different action")
+                    return@update record
+                }
+                if (action == DeploymentAction.ROLLBACK) {
+                    if (run.status != DeploymentRunStatus.SUCCEEDED || record.runs.last().id != runId || record.runs.any { !it.terminal() }) {
+                        throw DeploymentConflictException("only the most recent successful run can be rolled back")
+                    }
+                    return@update record.copy(runs = record.runs.map {
+                        if (it.id == runId) it.copy(status = DeploymentRunStatus.ABORTING,
+                            phase = if (run.kind == ApplicationKind.WEB && run.webStrategy != WebDeploymentStrategy.ROLLING) "ROLLBACK_PREVIEW" else "RESTORE",
+                            rollbackRequested = true, actionBy = principal, error = null,
+                            actionRequests = it.actionRequests + (requestId to action)) else it
+                    })
+                }
+                if (run.terminal()) throw DeploymentConflictException("run has already completed")
+                if (run.action != null) throw DeploymentConflictException("another action is pending")
+                if (action != DeploymentAction.ABORT && run.status != DeploymentRunStatus.AWAITING_APPROVAL) {
+                    throw DeploymentConflictException("new version is not ready for approval")
+                }
+                if (action == DeploymentAction.ADVANCE && (run.webStrategy != WebDeploymentStrategy.CANARY || run.step + 1 >= config.canarySteps.size)) {
+                    throw DeploymentConflictException("no remaining canary step")
+                }
+                if (action == DeploymentAction.PROMOTE && run.webStrategy == WebDeploymentStrategy.CANARY && run.step != config.canarySteps.lastIndex) {
+                    throw DeploymentConflictException("complete the canary steps before promotion")
+                }
+                record.copy(runs = record.runs.map { if (it.id == runId) it.copy(action = action, actionBy = principal,
+                    actionRequests = it.actionRequests + (requestId to action)) else it })
+            }.runs.first { it.id == runId }
         }
+
+    private fun <T : Any> authorized(principal: String, id: String, operation: (DeploymentRecord) -> T): Mono<T> =
+        Mono.fromCallable { store.get(id) }.subscribeOn(Schedulers.boundedElastic()).flatMap { record ->
+            access(principal, record.application.namespace).then(Mono.fromCallable { operation(record) }.subscribeOn(Schedulers.boundedElastic()))
+        }
+
+    private fun access(principal: String, namespace: String): Mono<Void> = namespaces.findAccessible(principal).flatMap { visible ->
+        if (visible.none { it.name == namespace }) Mono.error(DeploymentForbiddenException()) else Mono.empty()
     }
 
-    override fun configurations(principal: String, applicationId: String): Mono<List<DeploymentConfiguration>> {
-        val app = application(applicationId)
-        return requireNamespaceAccess(principal, app.namespace).map {
-            configurations.values.filter { it.applicationId == app.id }.sortedBy { it.revision }
-        }
-    }
-
-    override fun submitRun(
-        principal: String,
-        applicationId: String,
-        request: SubmitDeploymentRunRequest,
-    ): Mono<DeploymentRun> {
-        val app = application(applicationId)
-        val config = configurations[request.configurationId]
-            ?: throw DeploymentConfigurationNotFoundException(request.configurationId)
-        if (config.applicationId != app.id) throw DeploymentConfigurationNotFoundException(request.configurationId)
-        return requireNamespaceAccess(principal, app.namespace).map {
-            val queued = DeploymentRun(
-                id = newId("run"),
-                applicationId = app.id,
-                configurationId = config.id,
-                kind = app.kind,
-                orchestrator = app.orchestrator,
-                webStrategy = config.webStrategy,
-                batchMode = config.batchMode,
-                batchTargets = config.batchTargets,
-                status = DeploymentRunStatus.QUEUED,
-                requestedBy = principal,
-                requestedAt = clock.instant(),
-            )
-            runs[queued.id] = queued
-            val running = queued.copy(status = DeploymentRunStatus.RUNNING)
-            runs[queued.id] = running
-            runCatching {
-                orchestrators.execute(DeploymentExecutionCommand(running, app, config))
-            }.fold(
-                onSuccess = { outcome ->
-                    running.copy(
-                        status = DeploymentRunStatus.SUCCEEDED,
-                        executionId = outcome.executionId,
-                        result = outcome.result,
-                    )
-                },
-                onFailure = { failure ->
-                    running.copy(
-                        status = DeploymentRunStatus.FAILED,
-                        result = DeploymentExecutionResult(
-                            "FAILED",
-                            listOf(
-                                DeploymentResourcePlan(
-                                    apiVersion = "deploydock.io/v1alpha1",
-                                    kind = "DeploymentFailure",
-                                    namespace = app.namespace,
-                                    name = running.id,
-                                    purpose = failure.message ?: "deployment execution failed",
-                                ),
-                            ),
-                        ),
-                    )
-                },
-            ).also { runs[it.id] = it }
-        }
-    }
-
-    override fun runs(principal: String, applicationId: String): Mono<List<DeploymentRun>> {
-        val app = application(applicationId)
-        return requireNamespaceAccess(principal, app.namespace).map {
-            runs.values.filter { it.applicationId == app.id }.sortedBy { it.requestedAt }
-        }
-    }
-
-    private fun validateConfiguration(app: DeploymentApplication, request: SaveDeploymentConfigurationRequest) {
+    private fun validate(app: DeploymentApplication, request: SaveDeploymentConfigurationRequest) {
         if (request.image.isBlank()) throw DeploymentValidationException("image is required")
-        if (request.replicas != null && request.replicas < 0) {
-            throw DeploymentValidationException("replicas must be zero or greater")
-        }
-        when (app.kind) {
-            ApplicationKind.WEB -> {
-                if (request.webStrategy == null) throw DeploymentValidationException("webStrategy is required for web applications")
-                if (request.batchMode != null || request.batchTargets.isNotEmpty()) {
-                    throw DeploymentValidationException("batch deployment fields are not allowed for web applications")
-                }
-            }
-            ApplicationKind.BATCH -> {
-                if (request.batchMode == null) throw DeploymentValidationException("batchMode is required for batch applications")
-                if (request.webStrategy != null) {
-                    throw DeploymentValidationException("webStrategy is not allowed for batch applications")
-                }
-                if (request.batchMode == BatchDeploymentMode.GROUPED && request.batchTargets.size < 2) {
-                    throw DeploymentValidationException("GROUPED batch deployments require at least two batchTargets")
-                }
-                if (request.batchMode == BatchDeploymentMode.INDIVIDUAL && request.batchTargets.size > 1) {
-                    throw DeploymentValidationException("INDIVIDUAL batch deployments accept at most one batchTarget")
-                }
-            }
+        if (request.replicas != null && request.replicas < 1) throw DeploymentValidationException("replicas must be positive")
+        if (request.progressDeadlineSeconds !in 30..3600) throw DeploymentValidationException("progress deadline must be between 30 and 3600 seconds")
+        if (app.kind == ApplicationKind.WEB) {
+            if (request.webStrategy == null || request.batchMode != null || request.batchTargets.isNotEmpty()) throw DeploymentValidationException("web strategy is required and batch fields are not allowed")
+            if (request.webStrategy == WebDeploymentStrategy.CANARY && request.canaryRoute.isNullOrBlank()) throw DeploymentValidationException("CANARY requires an existing Gateway API HTTPRoute")
+            if (request.canarySteps.isEmpty() || request.canarySteps.any { it !in 1..99 } || request.canarySteps.zipWithNext().any { it.first >= it.second }) throw DeploymentValidationException("canarySteps must strictly increase between 1 and 99")
+        } else {
+            if (request.batchMode == null || request.webStrategy != null || request.canaryRoute != null) throw DeploymentValidationException("batch mode is required and web fields are not allowed")
+            val count = request.batchTargets.size
+            if (count > 10 || request.batchTargets.distinct().size != count || request.batchTargets.any { !it.matches(Regex("[a-z0-9]([-a-z0-9]*[a-z0-9])?")) }) throw DeploymentValidationException("batchTargets must contain at most 10 distinct CronJob names")
+            if (request.batchMode == BatchDeploymentMode.GROUPED && count < 2) throw DeploymentValidationException("GROUPED requires at least two CronJobs")
+            if (request.batchMode == BatchDeploymentMode.INDIVIDUAL && count > 1) throw DeploymentValidationException("INDIVIDUAL accepts at most one CronJob")
         }
     }
 
-    private fun application(id: String): DeploymentApplication =
-        applications[id] ?: throw DeploymentApplicationNotFoundException(id)
-
-    private fun requireNamespaceAccess(principal: String, namespace: String): Mono<Unit> =
-        namespaces.findAccessible(principal).map { visible ->
-            if (visible.none { it.name == namespace }) throw DeploymentForbiddenException()
-        }
-
-    private fun newId(prefix: String): String = "$prefix-${UUID.randomUUID()}"
+    private fun newId(prefix: String) = "$prefix-${UUID.randomUUID()}"
 }

@@ -188,14 +188,19 @@ so grant only the verbs each member needs.
 The `/api/v2/deployment-applications` endpoints register deployment targets,
 save immutable configurations, and submit runs. Requests are authenticated with
 the same JWT subject and are limited to namespaces visible to that principal.
-Runs execute through the deployment executor and return the generated execution
-plan. When `deploydock.temporal.enabled=true`, Temporal Workflow and Activity
-workers are registered on `deploydock.temporal.task-queue`; otherwise the same
-executor runs locally.
+Runs return `202` with a persisted execution ID. A reconciler changes Kubernetes
+resources and checks readiness before reporting success. Configurations, runs,
+and rollback snapshots are stored in ConfigMaps in the control namespace.
+When `deploydock.temporal.enabled=true`, Temporal workflows drive reconciliation.
+Selecting `TEMPORAL` while disabled returns `503`; `LOCAL` is an explicit choice.
 
-Web deployment plans target existing `apps/v1 Deployment` workloads. Blue-green
-and canary behavior is orchestrated by DeployDock around those Deployments, so
-clusters do not need Argo Rollouts CRDs or controllers.
+Web deployments target existing `apps/v1 Deployment` workloads. Blue-green
+creates an isolated preview Service and waits for manual approval. Canary uses
+an existing Gateway API HTTPRoute for weighted traffic and manual steps.
+Argo Rollouts is not required. Promotion preserves the original Deployment and
+Service names. Batch modes update existing CronJob templates, not running Jobs.
+See [deployment operations and preview testing](DEPLOYMENTS.md) for prerequisites,
+permissions, approval, rollback, recovery, and current limits.
 
 Register a Temporal-orchestrated web application and save canary/blue-green
 configurations:
@@ -209,7 +214,7 @@ curl -X POST http://localhost:8080/api/v2/deployment-applications \
 curl -X POST http://localhost:8080/api/v2/deployment-applications/$APP_ID/configurations \
   -H "Authorization: Bearer $ACCESS_TOKEN" \
   -H 'Content-Type: application/json' \
-  -d '{"image":"registry.example.com/shop:v2","replicas":3,"webStrategy":"CANARY"}'
+  -d '{"image":"registry.example.com/shop:v2","replicas":3,"webStrategy":"CANARY","canaryRoute":"shop-web","canarySteps":[10,50]}'
 
 curl -X POST http://localhost:8080/api/v2/deployment-applications/$APP_ID/configurations \
   -H "Authorization: Bearer $ACCESS_TOKEN" \
