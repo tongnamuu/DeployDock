@@ -28,6 +28,7 @@ Temporal, Argo Rollouts, DeployDock CRD 없이도 호출할 수 있다.
 | 블루그린 및 신규 Pod 테스트 | 기존 Deployment와 selector 기반 Service, `discovery.k8s.io/v1 EndpointSlice`, 추가 Pod 용량 |
 | preview-only 카나리 | 블루그린과 같은 표준 리소스; 테스트 후 수동 승격, 어댑터 불필요 |
 | 개별·그룹 배치 배포 | 기존 `batch/v1 CronJob`; 실행 중 Job은 변경하지 않음 |
+| 배치 수동 실행 | 배포된 CronJob 템플릿으로 `batch/v1 Job` 생성; 배포와 별도 이력 |
 | 정확한 가중치 설정 기반 카나리 | 해당 환경에서 구현·등록한 `CanaryTrafficAdapter`와 트래픽 분배기 |
 | 기본 상태 저장 | 기존 제어 namespace와 ConfigMap 읽기·쓰기 권한 |
 
@@ -89,6 +90,25 @@ fun main() {
 승인 대기는 무기한이며 호출자가 승인을 제공해야 한다. 상세한 port-forward 및 복구 절차는
 [운영 가이드](../DEPLOYMENTS.md)에 있다.
 
+## 배치 수동 실행
+
+배치 수동 실행은 배포 클라이언트와 분리된 API다. 등록된 BATCH 앱에 대해 호출한다.
+
+```kotlin
+val jobs = BatchExecutionClient(store, kubernetes)
+val execution = jobs.submit("operator", batchApplicationId,
+    SubmitBatchExecutionRequest(cronJobName = "settlement", requestId = "manual-20260917-1"))
+while (!jobs.reconcile(batchApplicationId, execution.id)) Thread.sleep(5_000)
+val result = jobs.executions("operator", batchApplicationId).first { it.id == execution.id }
+check(result.status == BatchExecutionStatus.SUCCEEDED)
+```
+
+`submit()`은 현재 CronJob 템플릿을 고정해 저장한다. 저장만 하고 배포하지 않은 설정은 사용하지 않는다.
+`reconcile()` 호출 스케줄은 호스트가 제공한다. 배포는 Job을 생성하지 않으며 수동 실행은 배포 이력을 만들지 않는다.
+`jobs.targets()`로 현재 배포된 이미지를 조회한다. 스케줄 Job은 이 이력에 수집하지 않는다.
+동일 requestId 재시도는 기존 실행을 반환하지만 새 requestId로 여러 번 실행하는 것은 허용한다.
+CronJob의 concurrencyPolicy가 수동 Job 실행을 제한하지는 않는다.
+
 ## 인증과 저장소
 
 독립 라이브러리의 기본 권한은 **전달한 KubernetesClient의 자격 증명**이다.
@@ -100,6 +120,8 @@ fun main() {
 `KubernetesDeploymentWorkloads(kubernetes, authorization = SubjectAccessReviewAuthorization(kubernetes))`를 사용한다.
 이 경우 실제 클라이언트 권한과 `principal`의 대상 권한이 모두 필요하며 SAR 생성 권한도 필요하다.
 루트 앱은 기존 JWT·namespace 접근 검사와 이 SAR 정책을 유지한다.
+`BatchExecutionClient`도 `authorization` 매개변수로 같은 SAR 정책을 받을 수 있다.
+수동 실행은 cronjobs/get 및 jobs/get,create, 이력 조회는 jobs/get 권한을 확인한다.
 
 `DeploymentStore`를 구현해 다른 저장소를 주입할 수 있다. `update`는 앱 단위로
 읽기·변경·저장을 직렬화해야 하며 예외 시 부분 저장하지 않아야 한다. 영속성·잠금·충돌 처리는

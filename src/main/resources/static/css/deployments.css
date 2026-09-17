@@ -76,6 +76,11 @@ tr[data-selected="true"] { background: #1b2521; }
 .configuration-form .section-heading, .span-two { grid-column: 1 / -1; }
 .form-submit { align-self: end; text-align: right; }
 .saved-configurations { margin-top: 28px; border-top: 1px solid var(--border); padding-top: 22px; }
+.manual-execution { display: flex; align-items: end; gap: 12px; }
+.manual-execution label { flex: 1; min-width: 0; max-width: 360px; }
+#execution-target-image { margin: 14px 0 28px; }
+#executions-view table { min-width: 1000px; }
+#executions td { max-width: 320px; white-space: normal; overflow-wrap: anywhere; }
 .configuration-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 16px 0; border-bottom: 1px solid #28322e; }
 .configuration-row > div { min-width: 0; }
 .configuration-row strong { font-size: 13px; overflow-wrap: anywhere; }

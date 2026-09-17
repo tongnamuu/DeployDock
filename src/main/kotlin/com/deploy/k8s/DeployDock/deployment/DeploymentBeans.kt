@@ -19,6 +19,10 @@ class DeploymentBeans {
         KubernetesDeploymentWorkloads(client, adapters.orderedStream().toList(), SubjectAccessReviewAuthorization(client))
 
     @Bean
+    fun batchExecutionClient(store: DeploymentStore, client: KubernetesClient, clock: Clock) =
+        BatchExecutionClient(store, client, SubjectAccessReviewAuthorization(client), clock)
+
+    @Bean
     fun deploymentReconciler(store: DeploymentStore, workloads: KubernetesDeploymentWorkloads, clock: Clock) =
         DeploymentReconciler(store, workloads, clock)
 

@@ -140,6 +140,7 @@ data class DeploymentRecord(
     val application: DeploymentApplication,
     val configurations: List<DeploymentConfiguration> = emptyList(),
     val runs: List<DeploymentRun> = emptyList(),
+    val batchExecutions: List<BatchExecution> = emptyList(),
 )
 
 data class DeploymentExecutionResult(

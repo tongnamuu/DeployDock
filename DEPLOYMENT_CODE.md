@@ -21,6 +21,8 @@ API 호출과 preview 접속 명령은 [운영 및 테스트 절차](DEPLOYMENTS
 | 8 | [DeploymentReconciler.kt](deployment-library/src/main/kotlin/com/deploy/k8s/DeployDock/deployment/DeploymentReconciler.kt) | `reconcile()`, `advance()` | 현재 단계에 맞는 작업을 선택한다. |
 | 9 | [TrafficAdapter.kt](deployment-library/src/main/kotlin/com/deploy/k8s/DeployDock/deployment/TrafficAdapter.kt) | `CanaryTrafficAdapter`, `DeploymentAuthorization` | 환경별 트래픽 제어와 권한 정책 계약이다. |
 | 10 | [GatewayApiTrafficAdapter.kt](deployment-gateway-api/src/main/kotlin/com/deploy/k8s/DeployDock/deployment/GatewayApiTrafficAdapter.kt) | `capture()`, `setWeight()`, `isReady()` | 선택형 모듈에서 HTTPRoute를 처리한다. |
+| 11 | [BatchExecutionClient.kt](deployment-library/src/main/kotlin/com/deploy/k8s/DeployDock/deployment/BatchExecutionClient.kt) | `submit()`, `reconcile()` | 배포와 독립된 수동 Job 접수·생성·상태 확인이다. |
+| 12 | [BatchExecutionController.kt](src/main/kotlin/com/deploy/k8s/DeployDock/deployment/BatchExecutionController.kt) | `submit()`, `history()`, `BatchExecutionScheduler` | 실행 API의 namespace 검사와 주기적 Job 상태 확인이다. |
 
 핵심 모듈은 `deployment-library`이며 Spring·Reactor·Temporal을 참조하지 않는다.
 서버를 거치지 않고 `DeploymentClient`와 `DeploymentReconciler`를 직접 사용해도 같은 실행 로직을 거친다.
@@ -38,7 +40,8 @@ API 호출과 preview 접속 명령은 [운영 및 테스트 절차](DEPLOYMENTS
 | `DeploymentConfiguration` | 저장 시점에 고정한 배포 설정 | 이미지 `shop:v2`, 전략 `BLUE_GREEN`, revision 2 |
 | `DeploymentRun` | 특정 설정을 적용하는 한 번의 실행 | `run-...`, 승인 대기, preview 접속 정보 |
 | `DeploymentSnapshot` | 복구에 사용할 실행 전 리소스 정보 | 원본 Deployment, Service selector, HTTPRoute backend, CronJob |
-| `DeploymentRecord` | ConfigMap 하나에 들어가는 앱별 데이터 | 앱 정보 + 최신 설정 한 개 + 실행 목록 |
+| `DeploymentRecord` | ConfigMap 하나에 들어가는 앱별 데이터 | 앱 정보 + 최신 설정 한 개 + 배포 목록 + 별도 배치 실행 목록 |
+| `BatchExecution` | 배포와 무관하게 접수한 수동 Job 한 건 | 실제 템플릿 이미지, Job UID, Pod 성공/실패 수, 완료 상태 |
 | `DeploymentRun.configuration` | 해당 실행을 시작할 때 고정한 설정 | 최신 저장 설정이 바뀌어도 실행·승인·롤백은 이 설정 사용 |
 | `status` | 사용자가 보는 실행 상태 | `RUNNING`, `AWAITING_APPROVAL`, `SUCCEEDED` |
 | `phase` | 다음 호출에서 처리할 내부 단계 | `WAIT_READY`, `SWITCH_WAIT`, `RESTORE` |
@@ -195,9 +198,24 @@ ConfigMap 저장과 워크로드 변경은 하나의 트랜잭션이 아니다. 
 `GROUPED`는 2~10개, `INDIVIDUAL`은 하나다. 중간 실패 시 같은 함수를 `restore=true`로 호출해
 이전 이미지로 복원한다. 성공은 템플릿 반영 완료를 의미하며 배치 Job의 실행 성공을 의미하지 않는다.
 
+수동 실행은 `BatchExecutionClient`가 담당한다. `DeploymentRun`을 만들거나 재사용하지 않는다.
+
+1. `submit()`은 batch 앱·대상·권한을 검사하고 현재 CronJob의 JobSpec을 읽는다. 최신 저장 설정의 이미지를 복사하지 않는다.
+2. requestId에서 안정적인 Job 이름을 만들고 `desiredJob`과 함께 QUEUED 이력을 저장한다. 접수 단계에서는 Job을 만들지 않는다.
+3. `reconcile()`은 요청자의 권한을 다시 검사한 뒤 같은 이름의 Job을 조회한다. 없으면 저장된 JobSpec으로 생성한다.
+4. 생성 후 이력 저장 전에 재시작해도 실행 label·앱 annotation·requestId로 이미 생성된 Job을 확인한다. UID를 확인한 뒤에는 UID도 일치해야 한다.
+5. Job 상태의 Complete/Failed condition으로 성공·실패를 확정한다. Pod 실패 횟수만으로 종료하지 않는다.
+6. 종료 상태는 보존한다. 아직 미완료인 기존 UID의 Job이 사라지면 MISSING으로 종료하고 새 Job을 만들지 않는다.
+
+`desiredJob`은 컨테이너 설정을 포함하므로 submit/history API에서는 제거한다. 저장소 자체 접근 권한은 별도 보호해야 한다.
+Job 생성과 이력 저장은 원자적이지 않다. 생성 직후 이력 저장 전에 Job까지 삭제되는 장애에서는
+존재 여부만으로 과거 실행을 입증할 수 없으므로 exactly-once 보장은 하지 않는다.
+스케줄로 생성된 Job은 조회·수집하지 않는다. 동시 수동 실행은 허용하며 기존 CronJob 스케줄도 바꾸지 않는다.
+
 | 확인하려는 동작 | 읽을 테스트 |
 |---|---|
 | 서버 없는 실행과 사용자 정의 트래픽 어댑터 | [StandaloneDeploymentTests.kt](deployment-library/src/test/kotlin/com/deploy/k8s/DeployDock/deployment/StandaloneDeploymentTests.kt) |
+| 배포/수동 실행 분리, 템플릿 고정, 중복 요청, 상태 확인, 유실, 재시작·권한 | [BatchExecutionTests.kt](deployment-library/src/test/kotlin/com/deploy/k8s/DeployDock/deployment/BatchExecutionTests.kt) |
 | preview 격리, 승인 전 전환 거부, 원본 복귀, 롤백 | [DeploymentExecutionTests.kt](src/test/kotlin/com/deploy/k8s/DeployDock/deployment/DeploymentExecutionTests.kt)의 `blue green isolates preview...` |
 | 카나리 단계 승인·중복 방지·Route 반영 대기 | 같은 파일의 `canary waits for each approval...`, `canary promotion restores...` |
 | 원본 갱신 중 중단, 외부 Service 변경 충돌 | 같은 파일의 `abort while original is updating...`, `external Service selector change...` |
@@ -207,22 +225,25 @@ ConfigMap 저장과 워크로드 변경은 하나의 트랜잭션이 아니다. 
 
 일반 테스트는 mock API 서버의 상태를 테스트 코드에서 갱신하므로 실제 Kubernetes controller나
 Gateway 데이터 경로까지 검증하지 않는다. 실 클러스터 테스트는 별도 환경변수가 있어야 실행된다.
-최신 설정 단일화 후 자동 테스트 39개 통과, 실 클러스터 테스트 1개 미실행을 확인했다.
+배치 수동 실행 분리 후 자동 테스트 47개 통과, 실 클러스터 테스트 1개 미실행을 확인했다.
 모든 Kubernetes 환경에서 실행을 검증했다는 의미는 아니다.
 
 ## 9. 웹 콘솔
 
-화면은 [deployments.html](src/main/resources/static/deployments.html), 동작은
+웹 화면은 [deployments.html](src/main/resources/static/deployments.html), 배치 화면은
+[batch.html](src/main/resources/static/batch.html), 공통 동작은
 [deployments.js](src/main/resources/static/js/deployments.js)에 있다. 기존 인증 토큰을 사용하고
 별도 프론트엔드 프레임워크 없이 같은 서버의 배포 API를 호출한다.
 
-- `initialize()`는 앱·접근 가능한 namespace·서버 capability를 읽는다. capability API도 인증이 필요하다.
+- `initialize()`는 앱·접근 가능한 namespace·서버 capability를 읽고 페이지 종류에 맞는 앱만 표시한다. 등록 종류도 해당 페이지로 고정한다.
 - `loadDetail()`은 선택한 앱의 설정과 실행을 조회하며, 앱 변경 후 도착한 이전 응답은 버린다.
 - 실행 현황은 4초마다 갱신한다. `renderActions()`가 상태·가중치 단계·최신 실행 여부에 따라 버튼을 구성한다.
 - 상태 조회 실패 시 `fresh=false`로 변경 요청을 막는다. 최종 권한·상태 검사는 서버가 수행한다.
 - 실행·승인·중단·롤백은 확인 대화상자를 거친다. `postIdempotent()`는 응답 유실 시 재시도할 requestId를 sessionStorage에 유지하고 성공 응답 후 제거한다.
 - preview는 서버가 반환한 Service·포트로 명령을 구성한다. UI는 port-forward를 실행하지 않는다. 종료된 실행에서는 preview 접속 버튼을 숨긴다.
 - DOM에는 서버 문자열을 `textContent`로 넣는다. 스냅샷은 기존 API에서 제외하고 화면에도 표시하지 않는다.
+- 배치의 `loadExecutions()`는 수동 실행과 실제 CronJob 이미지를 따로 읽고 `executionFresh`로 실행 버튼을 제어한다. 이 조회 실패가 배포 버튼까지 잠그지 않는다.
+- 배치 배포 버튼은 `/runs`, 수동 실행 버튼은 `/executions`를 호출한다. 각 API가 별도의 이력 목록에 저장한다.
 
 [브라우저 테스트](dev/ui/check.mjs)는 별도 개발용 모의 API를 사용한다.
 제품에 데모 서버를 포함하거나 클러스터 실패 시 모의 데이터로 자동 대체하지 않는다.

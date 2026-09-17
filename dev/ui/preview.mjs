@@ -20,6 +20,8 @@ const runs = new Map([
     ["app-billing", []],
 ]);
 const ids = new Map();
+const executions = new Map(apps.map((app) => [app.id, []]));
+const templates = new Map([["app-billing", ["settlement", "invoice"].map((name) => ({ name, images: { main: "registry.example.com/billing:v3" } }))]]);
 if (process.env.UI_PREVIEW_STATE) {
     const saved = JSON.parse(await readFile(process.env.UI_PREVIEW_STATE, "utf8"));
     apps.splice(0, apps.length, ...saved.apps);
@@ -28,6 +30,8 @@ if (process.env.UI_PREVIEW_STATE) {
         const previous = saved.configurations[app.id] || [];
         runs.set(app.id, (saved.runs[app.id] || []).map((run) => ({ ...run, configuration: run.configuration || previous.find((config) => config.id === run.configurationId) })));
         configurations.set(app.id, previous.slice(-1));
+        executions.set(app.id, saved.executions?.[app.id] || []);
+        if (saved.templates?.[app.id]) templates.set(app.id, saved.templates[app.id]);
     }
 }
 const terminal = (run) => ["SUCCEEDED", "FAILED", "ABORTED", "ROLLED_BACK"].includes(run.status);
@@ -41,7 +45,7 @@ async function handle(request, response) {
         const file = path.resolve(root, `.${decodeURIComponent(name)}`);
         if (!file.startsWith(root + path.sep)) return send(response, 403, { message: "Forbidden" });
         let content = await readFile(file);
-        if (name === "/deployments.html") content = Buffer.from(content.toString().replace('id="environment-notice" class="notice" hidden', 'id="environment-notice" class="notice"').replace('<script type="module"', '<script>localStorage.setItem("deploydock.accessToken", "ui-preview");</script><script type="module"'));
+        if (["/deployments.html", "/batch.html"].includes(name)) content = Buffer.from(content.toString().replace('id="environment-notice" class="notice" hidden', 'id="environment-notice" class="notice"').replace('<script type="module"', '<script>localStorage.setItem("deploydock.accessToken", "ui-preview");</script><script type="module"'));
         response.writeHead(200, { "Content-Type": { ".html": "text/html; charset=utf-8", ".css": "text/css", ".js": "text/javascript" }[path.extname(file)] || "text/plain", "Cache-Control": "no-store" });
         response.end(content); return;
     }
@@ -59,14 +63,31 @@ async function handle(request, response) {
         if (request.method === "GET") return send(response, 200, apps);
         if (apps.some((app) => app.name === body.name && app.namespace === body.namespace)) return send(response, 409, { message: "이미 등록된 앱입니다." });
         const app = { ...body, id: `app-${randomUUID()}`, createdAt: timestamp(), createdBy: "ui-preview" };
-        apps.push(app); configurations.set(app.id, []); runs.set(app.id, []);
+        apps.push(app); configurations.set(app.id, []); runs.set(app.id, []); executions.set(app.id, []);
         return send(response, 201, app);
     }
-    const match = url.pathname.match(/^\/api\/v2\/deployment-applications\/([^/]+)\/(configurations|runs)(?:\/([^/]+)\/actions)?$/);
+    const match = url.pathname.match(/^\/api\/v2\/deployment-applications\/([^/]+)\/(configurations|runs|executions|execution-targets)(?:\/([^/]+)\/actions)?$/);
     if (!match) return send(response, 404, { message: "Not found" });
     const [, id, collection, runId] = match;
     const app = apps.find((app) => app.id === id);
     if (!app) return send(response, 404, { message: "App not found" });
+    if (["executions", "execution-targets"].includes(collection)) {
+        if (app.kind !== "BATCH") return send(response, 400, { message: "배치 앱만 실행할 수 있습니다." });
+        const history = executions.get(id) || [];
+        const targets = templates.get(id) || [];
+        if (request.method === "GET") return send(response, 200, collection === "executions" ? history : targets);
+        if (collection !== "executions") return send(response, 405, { message: "Method not allowed" });
+        const existing = history.find((execution) => execution.requestId === body.requestId);
+        if (existing) return send(response, existing.cronJobName === body.cronJobName ? 202 : 409, existing);
+        const target = targets.find((item) => item.name === body.cronJobName);
+        if (!target) return send(response, 400, { message: "배포된 CronJob이 없습니다." });
+        const execution = { id: `job-${randomUUID()}`, applicationId: id, cronJobName: target.name, requestId: body.requestId,
+            jobName: `dd-job-${randomUUID()}`, images: { ...target.images }, status: "PENDING", requestedBy: "ui-preview", requestedAt: timestamp(), succeeded: 0, failed: 0 };
+        history.push(execution); executions.set(id, history);
+        later(execution, { status: "RUNNING", startedAt: timestamp(), active: 1 });
+        setTimeout(() => Object.assign(execution, { status: "SUCCEEDED", completedAt: timestamp(), active: 0, succeeded: 1 }), 4000);
+        return send(response, 202, execution);
+    }
     const records = collection === "configurations" ? configurations.get(id) : runs.get(id);
     if (request.method === "GET") return send(response, 200, collection === "configurations" ? records.slice(-1) : records.map((run) => ({ ...run, configuration: run.configuration || configurations.get(id).find((config) => config.id === run.configurationId) })));
     const key = `${id}:${runId || collection}:${body.requestId}`;
@@ -85,6 +106,8 @@ async function handle(request, response) {
         run.configuration = config;
         records.push(run); ids.set(key, run);
         later(run, run.result ? { status: "AWAITING_APPROVAL", phase: "APPROVAL" } : { status: "SUCCEEDED" });
+        if (app.kind === "BATCH") setTimeout(() => templates.set(id, (config.batchTargets.length ? config.batchTargets : [app.name])
+            .map((name) => ({ name, images: { main: config.image } }))), 1800);
         return send(response, 202, run);
     }
     const run = records.find((run) => run.id === runId);

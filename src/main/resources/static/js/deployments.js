@@ -3,11 +3,14 @@ import { icons } from "./vendor/lucide-icons.js";
 const $ = (selector) => document.querySelector(selector);
 const base = "/api/v2/deployment-applications";
 const tokenKey = "deploydock.accessToken";
+const pageKind = document.body.dataset.kind || "WEB";
+const batchPage = pageKind === "BATCH";
 const terminal = new Set(["SUCCEEDED", "FAILED", "ABORTED", "ROLLED_BACK"]);
 const statuses = { QUEUED: "대기", RUNNING: "배포 중", AWAITING_APPROVAL: "승인 대기", PROMOTING: "전환 중", ABORTING: "복구 중", SUCCEEDED: "성공", FAILED: "실패", ABORTED: "중단 완료", ROLLED_BACK: "롤백 완료" };
 const strategies = { ROLLING: "롤링", BLUE_GREEN: "블루그린", CANARY: "카나리", GROUPED: "그룹 배치", INDIVIDUAL: "개별 배치" };
 const phases = { PREPARE: "원본 상태 저장", APPLY: "신규 버전 적용", WAIT_READY: "Pod 준비 확인", APPROVAL: "검증 및 승인", ROUTE: "가중치 반영 확인", SWITCH: "운영 Service 전환", SWITCH_WAIT: "EndpointSlice 반영 확인", UPDATE_SOURCE: "원본 Deployment 갱신", SOURCE_READY: "원본 Pod 준비 확인", SOURCE_TRAFFIC: "원본 Service 복귀 확인", ROLLBACK_PREVIEW: "롤백 준비", RESTORE: "원본 복원", RESTORE_WAIT: "복원 결과 확인" };
-const state = { apps: [], namespaces: [], configs: [], runs: [], appId: null, runId: null, capabilities: null, busy: false, fresh: false, authenticated: false };
+const state = { apps: [], namespaces: [], configs: [], runs: [], executions: [], targets: [], executionFresh: false, appId: null, runId: null, capabilities: null, busy: false, fresh: false, authenticated: false };
+let executionVersion = 0;
 let detailVersion = 0;
 let initializationVersion = 0;
 let pollTimer;
@@ -56,7 +59,9 @@ function notify(text) {
 function signedOut() {
     state.authenticated = false;
     state.fresh = false;
+    state.executionFresh = false;
     detailVersion++;
+    executionVersion++;
     initializationVersion++;
     clearTimeout(pollTimer);
     localStorage.removeItem(tokenKey);
@@ -99,6 +104,7 @@ function syncControls() {
     document.querySelectorAll(".app-item").forEach((button) => { button.disabled = state.busy; });
     renderActions();
     document.querySelectorAll("[data-deploy]").forEach((button) => { button.disabled = state.busy || !state.fresh || activeRun(); });
+    if (batchPage) $("#execute-batch").disabled = state.busy || !state.executionFresh || !$("#execution-target").value;
 }
 
 async function initialize() {
@@ -109,7 +115,7 @@ async function initialize() {
     try {
         const [apps, namespaces, capabilities] = await Promise.all([api(base), api("/api/namespaces"), api(`${base}/capabilities`)]);
         if (version !== initializationVersion) return;
-        state.apps = apps;
+        state.apps = apps.filter((item) => item.kind === pageKind);
         state.namespaces = namespaces;
         state.capabilities = capabilities;
         state.authenticated = true;
@@ -127,7 +133,7 @@ async function initialize() {
         $("#traffic-adapter").replaceChildren(option("", "Preview 검증"), ...capabilities.deployment.configuredTrafficAdapters.map((value) => option(value, value)));
         if (capabilities.deployment.configuredTrafficAdapters.includes(currentAdapter)) $("#traffic-adapter").value = currentAdapter;
         const selected = state.appId || decodeURIComponent(location.hash.slice(1));
-        await selectApp(apps.some((item) => item.id === selected) ? selected : apps[0]?.id || null, false);
+        await selectApp(state.apps.some((item) => item.id === selected) ? selected : state.apps[0]?.id || null, false);
         if (!state.appId || state.fresh) {
             message("#page-error", "");
             $("#connection").textContent = "연결됨";
@@ -165,6 +171,8 @@ async function selectApp(id, reset = true) {
     const changed = state.appId !== id;
     state.appId = id;
     if (changed) {
+        executionVersion++;
+        state.executions = []; state.targets = []; state.executionFresh = false;
         state.configs = []; state.runs = []; state.runId = null; state.fresh = false;
         $("#configuration-form").reset();
     }
@@ -177,9 +185,12 @@ async function selectApp(id, reset = true) {
     $("#app-meta").textContent = `${app().namespace} / ${app().name} · ${app().orchestrator}`;
     $("#app-kind").textContent = app().kind === "WEB" ? "Deployment" : "CronJob";
     updateFields();
+    $("#run-traffic").parentElement.hidden = batchPage;
+    if (batchPage) renderExecutions();
     renderRuns(); renderConfigurations();
     if (reset) showTab("runs");
     await loadDetail();
+    if (batchPage) await loadExecutions();
 }
 
 async function loadDetail() {
@@ -208,6 +219,7 @@ function schedulePoll() {
     if (!state.authenticated) return;
     pollTimer = setTimeout(async () => {
         if (!document.hidden && !state.busy) await loadDetail();
+        if (!document.hidden && !state.busy && batchPage) await loadExecutions();
         schedulePoll();
     }, 4000);
 }
@@ -308,7 +320,7 @@ function renderActions() {
 }
 
 function showTab(tab) {
-    for (const name of ["runs", "config"]) {
+    for (const name of batchPage ? ["runs", "config", "executions"] : ["runs", "config"]) {
         $(`#${name}-tab`).setAttribute("aria-selected", String(name === tab));
         $(`#${name}-tab`).tabIndex = name === tab ? 0 : -1;
         $(`#${name}-view`).hidden = name !== tab;
@@ -334,11 +346,11 @@ function renderConfigurations() {
         summary.append(node("strong", `r${config.revision} · ${strategies[config.webStrategy || config.batchMode]}`), node("p", config.image, "mono"), node("p", `${config.batchMode ? config.batchTargets.join(", ") || app().name : config.replicas ? `${config.replicas} Pods` : "Pod 수 유지"} · ${date(config.savedAt)}`));
         const button = node("button", undefined, "button button-primary");
         button.type = "button"; button.dataset.deploy = config.id;
-        button.append(icon("Play"), document.createTextNode("배포 실행"));
+        button.append(icon("Play"), document.createTextNode(batchPage ? "배포" : "배포 실행"));
         button.disabled = state.busy || !state.fresh || activeRun();
         button.addEventListener("click", () => {
             const targetApp = app();
-            openConfirmation("배포 실행", `${targetApp.namespace} / ${targetApp.name}\nr${config.revision} · ${config.image}`, async () => {
+            openConfirmation(batchPage ? "배포" : "배포 실행", `${targetApp.namespace} / ${targetApp.name}\nr${config.revision} · ${config.image}`, async () => {
                 const run = await postIdempotent(`${base}/${encodeURIComponent(targetApp.id)}/runs`, { configurationId: config.id }, `${targetApp.id}:submit:${config.id}`);
                 state.runId = run.id;
                 showTab("runs");
@@ -378,6 +390,7 @@ $("#confirm-submit").addEventListener("click", () => mutate(async () => {
     await confirmation();
     $("#confirm-dialog").close();
     await loadDetail();
+    if (batchPage) await loadExecutions();
     notify("요청을 접수했습니다.");
 }, "#confirm-error"));
 
@@ -417,6 +430,8 @@ $("#register-form").addEventListener("submit", (event) => {
         const created = await api(base, { method: "POST", body: JSON.stringify(body) });
         state.appId = created.id;
         state.configs = []; state.runs = []; state.runId = null; state.fresh = false;
+        executionVersion++;
+        state.executions = []; state.targets = []; state.executionFresh = false;
         $("#configuration-form").reset();
         $("#register-dialog").close();
         await initialize(); showTab("config");
@@ -436,7 +451,6 @@ $("#login-form").addEventListener("submit", (event) => {
 });
 
 $("#register-open").addEventListener("click", () => { message("#register-error", ""); $("#register-dialog").showModal(); });
-$("#register-kind").addEventListener("change", () => { $("#service-label").hidden = $("#register-kind").value !== "WEB"; });
 $("#refresh").addEventListener("click", initialize);
 $("#logout").addEventListener("click", signedOut);
 $("#namespace-filter").addEventListener("change", renderApps);
@@ -446,7 +460,9 @@ $("#config-tab").addEventListener("click", () => showTab("config"));
 $(".view-tabs").addEventListener("keydown", (event) => {
     if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) return;
     event.preventDefault();
-    const tab = event.key === "Home" ? "runs" : event.key === "End" ? "config" : event.target.id === "runs-tab" ? "config" : "runs";
+    const tabs = [...$(".view-tabs").querySelectorAll('[role="tab"]')].map((item) => item.id.replace("-tab", ""));
+    const index = tabs.indexOf(event.target.id.replace("-tab", ""));
+    const tab = event.key === "Home" ? tabs[0] : event.key === "End" ? tabs.at(-1) : tabs[(index + (event.key === "ArrowLeft" ? -1 : 1) + tabs.length) % tabs.length];
     showTab(tab);
     $(`#${tab}-tab`).focus();
 });
@@ -465,4 +481,61 @@ document.querySelectorAll("[data-close]").forEach((button) => button.addEventLis
 document.querySelectorAll("dialog").forEach((dialog) => dialog.addEventListener("cancel", (event) => { if (state.busy) event.preventDefault(); }));
 document.addEventListener("visibilitychange", () => { if (!document.hidden && state.authenticated && !state.busy) loadDetail(); });
 window.addEventListener("storage", (event) => { if (event.key === tokenKey && !event.newValue) signedOut(); });
+async function loadExecutions() {
+    if (!state.appId || !state.authenticated) return;
+    const id = state.appId;
+    const version = ++executionVersion;
+    try {
+        const [executions, targets] = await Promise.all([api(path("/executions")), api(path("/execution-targets"))]);
+        if (version !== executionVersion || state.appId !== id || !state.authenticated) return;
+        state.executions = executions; state.targets = targets; state.executionFresh = true;
+        message("#execution-error", "");
+        renderExecutions();
+    } catch (error) {
+        if (version !== executionVersion || state.appId !== id) return;
+        state.executionFresh = false;
+        message("#execution-error", error.message);
+    }
+    syncControls();
+}
+
+function renderExecutions() {
+    const selected = $("#execution-target").value;
+    $("#execution-target").replaceChildren(...state.targets.map((target) => option(target.name, target.name)));
+    if (state.targets.some((target) => target.name === selected)) $("#execution-target").value = selected;
+    renderTargetImage();
+    $("#execution-count").textContent = `${state.executions.length}건`;
+    $("#executions-empty").hidden = state.executions.length > 0;
+    $("#executions").replaceChildren(...[...state.executions].reverse().map((execution) => {
+        const row = node("tr");
+        const name = node("td"); name.append(node("strong", execution.jobName), node("div", execution.cronJobName, "muted"));
+        const status = node("td");
+        const badge = statusBadge(execution);
+        badge.textContent = { QUEUED: "실행 요청", PENDING: "Pod 대기", RUNNING: "실행 중", SUCCEEDED: "작업 성공", FAILED: "작업 실패", MISSING: "Job 유실" }[execution.status] || execution.status;
+        status.append(badge);
+        if (execution.message) status.append(node("p", execution.message, "error-message"));
+        row.append(name, node("td", Object.values(execution.images).join(", "), "mono"), status, node("td", date(execution.requestedAt)),
+            node("td", `${execution.startedAt ? date(execution.startedAt) : "-"} / ${execution.completedAt ? date(execution.completedAt) : "-"}`), node("td", `${execution.succeeded || 0} / ${execution.failed || 0}`));
+        return row;
+    }));
+}
+
+function renderTargetImage() {
+    const target = state.targets.find((item) => item.name === $("#execution-target").value);
+    $("#execution-target-image").textContent = target ? Object.entries(target.images).map(([name, image]) => `${name}: ${image}`).join(" · ") : "실행 가능한 CronJob이 없습니다.";
+}
+
+if (batchPage) {
+    $("#executions-tab").addEventListener("click", () => { showTab("executions"); loadExecutions(); });
+    $("#execution-target").addEventListener("change", () => { renderTargetImage(); syncControls(); });
+    $("#execute-batch").addEventListener("click", () => {
+        const target = state.targets.find((item) => item.name === $("#execution-target").value);
+        if (!target || !state.executionFresh) return;
+        const id = state.appId;
+        openConfirmation("수동 실행", `${app().namespace} / ${target.name}\n현재 배포된 이미지: ${Object.values(target.images).join(", ")}`, async () => {
+            await postIdempotent(`${base}/${encodeURIComponent(id)}/executions`, { cronJobName: target.name }, `${id}:execute:${target.name}`);
+            showTab("executions");
+        });
+    });
+}
 initialize();

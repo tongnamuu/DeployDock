@@ -39,6 +39,7 @@ class SecurityConfiguration {
                     "/admin/**",
                     "/custom-resources.html",
                     "/deployments.html",
+                    "/batch.html",
                     "/css/**",
                     "/js/**",
                     "/api/auth/signup",

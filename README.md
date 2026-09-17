@@ -28,9 +28,11 @@ JSON API, and the server has no template-rendering controller.
   static shell; its API requests still require administrator authorization.
 - `/custom-resources.html`: creates a registered custom resource when the
   signed-in user has `create` RBAC permission for that CRD and namespace.
-- `/deployments.html`: registers deployment applications, saves configurations,
+- `/deployments.html`: registers web applications, saves configurations,
   starts deployments, and displays live execution phases with approval, abort,
   rollback, and preview connection controls. Uses the authenticated deployment API.
+- `/batch.html`: separate batch configuration, deployment history, and manual Job
+  execution history. Execution uses the currently deployed CronJob template.
 
 For a cluster-free, explicitly labelled UI preview and browser checks, see
 [deployment UI verification](dev/ui/README.md). Preview data is not a real deployment.
@@ -218,6 +220,11 @@ The bundled Gateway adapter is disabled by default. Enable it with
 and HTTPRoute already exist. Custom adapter beans can use other traffic systems.
 Argo Rollouts is not required. Promotion preserves the original Deployment and
 Service names. Batch modes update existing CronJob templates, not running Jobs.
+The UI separates web deployments (`/deployments.html`) from batch operations
+(`/batch.html`). Batch deployment history (`/runs`) and manual Job history
+(`/executions`) are independent. Manual execution snapshots the currently
+deployed CronJob template, not an unapplied saved configuration. Scheduled Jobs
+are not collected. Deploying a batch template never submits a manual Job.
 See [deployment operations and preview testing](DEPLOYMENTS.md) for prerequisites,
 permissions, approval, rollback, recovery, and current limits.
 For the implementation walkthrough, file responsibilities, and state transitions,

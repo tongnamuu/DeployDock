@@ -12,7 +12,7 @@ Spring 서버 없이 사용하는 방법은 [라이브러리 가이드](deployme
 ## 준비
 
 웹 콘솔 `/deployments.html`에서 로그인한 뒤 앱 등록 → 배포 설정 → 설정 저장 → 배포 실행으로
-진행한다. 실행 현황은 4초마다 갱신하며 Pod 로그나 지표가 아니라 서버의 실행 상태를 표시한다.
+진행한다. 웹 전용 화면이며 배포 이력은 4초마다 갱신한다. Pod 로그나 지표가 아니라 서버의 배포 상태를 표시한다.
 승인 대기 시 preview Service와 port-forward 명령을 확인하고 승격 또는 가중치 단계를 승인한다.
 UI가 port-forward 프로세스를 자동 실행하지는 않는다. 명령 실행 후 로컬 preview 링크에 접속한다.
 가중치 어댑터와 Temporal은 서버 capability에 등록된 경우에만 선택할 수 있다.
@@ -143,11 +143,45 @@ Ingress NGINX와 서비스 메시용 어댑터는 아직 없다.
 
 ## 배치
 
+배치 전용 화면은 `/batch.html`이다. 웹 앱은 웹 화면에, 배치 앱은 배치 화면에만 표시한다.
+배치는 **배포 설정 / 배포 이력 / 실행 이력**을 따로 관리한다.
+설정 저장은 최신 설정 하나를 교체할 뿐이고, **배포**는 CronJob 템플릿만 갱신한다.
+**수동 실행**을 별도로 눌러야 DeployDock이 Job을 생성한다. 배포 성공과 작업 성공은 다른 상태다.
+
 `GROUPED`는 2~10개의 서로 다른 기존 CronJob 템플릿을 갱신한다.
 `INDIVIDUAL`은 지정한 CronJob 하나를 갱신하며, 대상 생략 시 앱 이름을 사용한다.
 이미 실행 중인 Job은 수정하지 않고 이후 스케줄에 새 이미지를 적용한다.
 그룹 변경은 Kubernetes 다중 리소스 트랜잭션이 아니며 순차 적용한다. 중간 실패 시
 이미 바뀐 대상들을 복원한다. 그 사이 스케줄된 Job까지 취소·복원하지는 않는다.
+
+### UI 수동 실행
+
+실행 이력 탭에서 현재 배포된 CronJob과 이미지를 선택·확인하고 수동 실행한다.
+서버가 요청을 접수할 때 실제 CronJob 템플릿을 읽어 고정한다. 저장만 한 설정은 실행에 사용하지 않는다.
+예를 들어 배포된 이미지가 v3이고 저장 설정만 v4라면 수동 Job은 v3로 실행한다.
+v4를 배포한 뒤 요청하는 Job부터 v4로 실행한다. 이미 접수한 Job의 설정은 바뀌지 않는다.
+
+| API (`/api/v2/deployment-applications/{id}` 기준) | 역할 |
+|---|---|
+| `GET /execution-targets` | 앱의 현재·과거 배포 대상 중 실제 존재하는 CronJob과 배포된 이미지 |
+| `POST /executions` | `{ "cronJobName": "settlement", "requestId": "manual-20260917-1" }`, 수동 실행 접수 후 202 |
+| `GET /executions` | UI/API로 수동 접수한 실행 이력; 스케줄 생성 Job은 포함하지 않음 |
+
+템플릿과 요청을 먼저 저장하고 별도의 `BatchExecutionScheduler`가 기본 5초 간격으로 Job 생성·상태 확인을 한다.
+배포 엔진의 LOCAL/Temporal 선택과 별개이며, 실제 Pod 실행은 Kubernetes Job controller가 담당한다.
+동일 requestId 재요청은 기존 실행을 반환한다. 다른 requestId는 새로운 작업이며 동시 실행할 수 있다.
+CronJob의 `concurrencyPolicy`는 이 수동 Job에 적용되지 않으므로 중복 업무 처리 방지는 작업 자체에서도 필요하다.
+CronJob의 schedule·suspend를 바꾸지 않으며 기존 스케줄은 그대로다. Job 템플릿 자체가 suspended이거나
+수동 selector를 지정한 경우 수동 실행을 거부한다. 이번 범위는 수동 실행과 이력이며 로그·취소 기능은 포함하지 않는다.
+
+상태는 `QUEUED` → `PENDING` → `RUNNING` → `SUCCEEDED` 또는 `FAILED`다. 짧은 작업은 중간 상태를 건너뛸 수 있다.
+Pod 한 번의 실패만으로 Job 실패를 확정하지 않고 Job의 Complete/Failed condition을 확인한다.
+완료 확인 후 Job이 TTL로 삭제되어도 이력은 남는다. 생성 UID를 확인했던 미완료 Job이 사라지면
+`MISSING`으로 기록하고 재생성하지 않는다. API·권한 오류는 오류 메시지와 이전 상태를 남기고 재시도한다.
+
+서버 사용자와 ServiceAccount 모두 대상 namespace의 `cronjobs/get`, `jobs/get,create` 권한이 필요하다.
+실행 이력 조회는 `jobs/get`, 대상 조회는 `cronjobs/get`을 검사한다. 배포 권한과 별도이며
+실행 조회 실패가 배포 화면을 잠그지는 않는다. 원본 템플릿 스냅샷은 저장소에만 두고 API에 반환하지 않는다.
 
 ## Temporal과 재시작
 
@@ -166,7 +200,7 @@ Kotlin payload 변환기를 명시적으로 등록했다. 비활성 상태에서
 
 ## 운영 범위와 검증
 
-- 설정과 실행 이력은 앱별 ConfigMap에 저장하며 800KB 제한을 둔다. 무제한 이력·자동 보관 기능은 없다.
+- 설정·배포 이력·별도의 수동 실행 이력은 앱별 ConfigMap에 저장하며 합계 800KB 제한을 둔다. 무제한 이력·자동 보관 기능은 없다.
 - 복구를 위해 성공한 실행의 preview Deployment와 Service를 남기고 Pod만 0개로 줄인다. 자동 삭제 정책은 없다.
 - HPA/GitOps와의 공동 소유·충돌 조정은 제공하지 않는다. 같은 Deployment 이미지와 Service selector를 동시에 변경하지 않아야 한다.
 - preview 격리를 위해 원본 selector의 label 값 하나가 달라진다. 해당 label에 의존하는 NetworkPolicy와 PDB는 신규 Pod에도 맞는 별도 정책이 필요할 수 있다.

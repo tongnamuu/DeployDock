@@ -76,6 +76,19 @@ class AuthenticationFlowTests(
         client.get().uri("/api/v2/deployment-applications/capabilities")
             .exchange().expectStatus().isUnauthorized
 
+        client.get().uri("/batch.html")
+            .exchange().expectStatus().isOk
+            .expectBody(String::class.java)
+            .value { body -> check(body?.contains("수동 실행") == true) }
+
+        client.get().uri("/api/v2/deployment-applications/test/executions")
+            .exchange().expectStatus().isUnauthorized
+
+        client.post().uri("/api/v2/deployment-applications/test/executions")
+            .contentType(MediaType.APPLICATION_JSON)
+            .bodyValue("""{"cronJobName":"billing","requestId":"manual"}""")
+            .exchange().expectStatus().isUnauthorized
+
         client.post().uri("/api/auth/signup")
             .contentType(MediaType.APPLICATION_JSON)
             .bodyValue("""{"username":"Alice","password":"short"}""")

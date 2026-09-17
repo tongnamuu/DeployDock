@@ -18,6 +18,7 @@ try {
     await mkdir("build/ui", { recursive: true });
     await page.goto(`${origin}/deployments.html`);
     await page.locator("#application-detail").waitFor();
+    assert.equal(await page.locator(".app-item").filter({ hasText: "billing" }).count(), 0);
     assert.equal(await page.locator("#environment-notice").isVisible(), true);
     if (await page.locator("#run-status").getAttribute("data-status") !== "AWAITING_APPROVAL") {
         await page.getByRole("tab", { name: "배포 설정", exact: true }).click();
@@ -94,13 +95,51 @@ try {
     await confirm("승격 승인");
     await status("SUCCEEDED");
 
-    await page.locator(".app-item").filter({ hasText: "billing" }).click();
+    await page.getByRole("link", { name: "배치", exact: true }).click();
+    await page.locator("#application-detail").waitFor();
+    assert.equal(await page.locator(".app-item").filter({ hasText: "shop-web" }).count(), 0);
+    assert.equal(await page.getByRole("tab").count(), 3);
+    await page.getByRole("tab", { name: "실행 이력", exact: true }).click();
+    await page.waitForFunction(() => document.querySelector("#execute-batch").disabled === false);
+    assert.match(await page.locator("#execution-target-image").textContent(), /billing:v3/);
+    await confirm("수동 실행");
+    await page.locator("#executions tr").waitFor();
+    assert.match(await page.locator("#executions tr").textContent(), /billing:v3/);
+    assert.equal(await page.locator("#runs tr").count(), 0);
+    await noOverflow();
+    await page.screenshot({ path: "build/ui/batch-desktop.png", fullPage: true });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await noOverflow();
+    await page.screenshot({ path: "build/ui/batch-mobile.png", fullPage: true });
+    await page.setViewportSize({ width: 1440, height: 1000 });
     await page.getByRole("tab", { name: "배포 설정", exact: true }).click();
     assert.equal(await page.locator("#web-fields").isVisible(), false);
     assert.equal(await page.locator("#batch-fields").isVisible(), true);
-    await confirm("배포 실행");
+    await confirm("배포");
     await status("SUCCEEDED");
     assert.equal(await page.locator("#preview").isVisible(), false);
+    assert.equal(await page.locator("#executions tr").count(), 1, "deployment must not execute a job");
+    await page.getByRole("tab", { name: "실행 이력", exact: true }).click();
+    await page.waitForFunction(() => document.querySelector("#execution-target-image").textContent.includes("billing:v4"));
+    await confirm("수동 실행");
+    await page.waitForFunction(() => document.querySelectorAll("#executions tr").length === 2);
+    assert.match(await page.locator("#executions tr").first().textContent(), /billing:v4/);
+    assert.equal(await page.locator("#runs tr").count(), 1, "manual execution must not create deployment history");
+    await page.getByRole("tab", { name: "배포 설정", exact: true }).click();
+    await page.locator('[name="image"]').fill("registry.example.com/billing:v5");
+    await page.getByRole("button", { name: "설정 저장", exact: true }).click();
+    await page.waitForFunction(() => document.querySelector("#configuration-count").textContent === "최신 r2");
+    assert.equal(await page.locator(".configuration-row").count(), 1);
+    await page.getByRole("tab", { name: "실행 이력", exact: true }).click();
+    assert.match(await page.locator("#execution-target-image").textContent(), /billing:v4/);
+    await page.route("**/deployment-applications/*/executions", (route) => route.fulfill({ status: 403, contentType: "application/json", body: '{"message":"Job 조회 권한이 없습니다."}' }));
+    await page.getByRole("button", { name: "새로고침", exact: true }).click();
+    await page.locator("#execution-error:not([hidden])").waitFor();
+    assert.equal(await page.locator("#execute-batch").isDisabled(), true);
+    await page.getByRole("tab", { name: "배포 설정", exact: true }).click();
+    assert.equal(await page.locator("[data-deploy]").isEnabled(), true, "execution access must not block deployment");
+    await page.unroute("**/deployment-applications/*/executions");
+    await page.getByRole("tab", { name: "배포 이력", exact: true }).click();
 
     await page.route("**/deployment-applications/*/runs", (route) => route.fulfill({ status: 403, contentType: "application/json", body: '{"message":"접근 권한이 없습니다."}' }));
     await page.getByRole("button", { name: "새로고침", exact: true }).click();
@@ -122,7 +161,7 @@ try {
     await page.waitForFunction(() => document.querySelectorAll("#traffic-adapter option").length === 1);
     assert.equal(await page.locator("#orchestrator option").count(), 1);
     assert.deepEqual(errors, []);
-    console.log("UI checks passed: desktop/mobile, blue-green promote/rollback, register/save/run, retry identity, canary preview/weighted, batch, 403, 401.");
+    console.log("UI checks passed: desktop/mobile, blue-green, retry identity, canary, separate web/batch pages, independent batch deployment/execution history, deployed image selection, latest settings, independent permissions, 403, 401.");
 } catch (error) {
     await page.screenshot({ path: "build/ui/failure.png", fullPage: true });
     throw error;
