@@ -193,6 +193,10 @@ plan. When `deploydock.temporal.enabled=true`, Temporal Workflow and Activity
 workers are registered on `deploydock.temporal.task-queue`; otherwise the same
 executor runs locally.
 
+Web deployment plans target existing `apps/v1 Deployment` workloads. Blue-green
+and canary behavior is orchestrated by DeployDock around those Deployments, so
+clusters do not need Argo Rollouts CRDs or controllers.
+
 Register a Temporal-orchestrated web application and save canary/blue-green
 configurations:
 

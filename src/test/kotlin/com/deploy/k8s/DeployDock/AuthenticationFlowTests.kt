@@ -290,7 +290,8 @@ class AuthenticationFlowTests(
             .jsonPath("$.status").isEqualTo("SUCCEEDED")
             .jsonPath("$.executionId").exists()
             .jsonPath("$.result.mode").isEqualTo("WEB_CANARY")
-            .jsonPath("$.result.resources[0].kind").isEqualTo("Rollout")
+            .jsonPath("$.result.resources[0].apiVersion").isEqualTo("apps/v1")
+            .jsonPath("$.result.resources[0].kind").isEqualTo("Deployment")
 
         val batchAppId = client.post().uri("/api/v2/deployment-applications")
             .headers { it.setBearerAuth(accessToken) }

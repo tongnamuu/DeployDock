@@ -47,18 +47,18 @@ class DeploymentPlanExecutor : DeploymentExecutor {
                 purpose = "rolling replacement for ${config.image}",
             )
             WebDeploymentStrategy.BLUE_GREEN -> DeploymentResourcePlan(
-                apiVersion = "argoproj.io/v1alpha1",
-                kind = "Rollout",
+                apiVersion = "apps/v1",
+                kind = "Deployment",
                 namespace = app.namespace,
                 name = app.name,
-                purpose = "blue-green service switch for ${config.image}",
+                purpose = "blue-green orchestration for existing Deployment using ${config.image}",
             )
             WebDeploymentStrategy.CANARY -> DeploymentResourcePlan(
-                apiVersion = "argoproj.io/v1alpha1",
-                kind = "Rollout",
+                apiVersion = "apps/v1",
+                kind = "Deployment",
                 namespace = app.namespace,
                 name = app.name,
-                purpose = "canary promotion for ${config.image}",
+                purpose = "canary orchestration for existing Deployment using ${config.image}",
             )
         }
         return DeploymentExecutionResult("WEB_${strategy.name}", listOf(resource))
