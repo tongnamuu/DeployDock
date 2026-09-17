@@ -208,3 +208,20 @@ ConfigMap 저장과 워크로드 변경은 하나의 트랜잭션이 아니다. 
 Gateway 데이터 경로까지 검증하지 않는다. 실 클러스터 테스트는 별도 환경변수가 있어야 실행된다.
 Ingress 독립 preview 카나리 추가 후 자동 테스트 36개 통과, 실 클러스터 테스트 1개 미실행을 확인했다.
 모든 Kubernetes 환경에서 실행을 검증했다는 의미는 아니다.
+
+## 9. 웹 콘솔
+
+화면은 [deployments.html](src/main/resources/static/deployments.html), 동작은
+[deployments.js](src/main/resources/static/js/deployments.js)에 있다. 기존 인증 토큰을 사용하고
+별도 프론트엔드 프레임워크 없이 같은 서버의 배포 API를 호출한다.
+
+- `initialize()`는 앱·접근 가능한 namespace·서버 capability를 읽는다. capability API도 인증이 필요하다.
+- `loadDetail()`은 선택한 앱의 설정과 실행을 조회하며, 앱 변경 후 도착한 이전 응답은 버린다.
+- 실행 현황은 4초마다 갱신한다. `renderActions()`가 상태·가중치 단계·최신 실행 여부에 따라 버튼을 구성한다.
+- 상태 조회 실패 시 `fresh=false`로 변경 요청을 막는다. 최종 권한·상태 검사는 서버가 수행한다.
+- 실행·승인·중단·롤백은 확인 대화상자를 거친다. `postIdempotent()`는 응답 유실 시 재시도할 requestId를 sessionStorage에 유지하고 성공 응답 후 제거한다.
+- preview는 서버가 반환한 Service·포트로 명령을 구성한다. UI는 port-forward를 실행하지 않는다. 종료된 실행에서는 preview 접속 버튼을 숨긴다.
+- DOM에는 서버 문자열을 `textContent`로 넣는다. 스냅샷은 기존 API에서 제외하고 화면에도 표시하지 않는다.
+
+[브라우저 테스트](dev/ui/check.mjs)는 별도 개발용 모의 API를 사용한다.
+제품에 데모 서버를 포함하거나 클러스터 실패 시 모의 데이터로 자동 대체하지 않는다.

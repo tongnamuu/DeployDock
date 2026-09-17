@@ -68,6 +68,14 @@ class AuthenticationFlowTests(
             .expectBody(String::class.java)
             .value { body -> check(body?.contains("CR 생성") == true) }
 
+        client.get().uri("/deployments.html")
+            .exchange().expectStatus().isOk
+            .expectBody(String::class.java)
+            .value { body -> check(body?.contains("배포 실행") == true) }
+
+        client.get().uri("/api/v2/deployment-applications/capabilities")
+            .exchange().expectStatus().isUnauthorized
+
         client.post().uri("/api/auth/signup")
             .contentType(MediaType.APPLICATION_JSON)
             .bodyValue("""{"username":"Alice","password":"short"}""")
@@ -107,6 +115,14 @@ class AuthenticationFlowTests(
             ?.toString(Charsets.UTF_8)
             ?.let { Regex("\\\"accessToken\\\":\\\"([^\\\"]+)\\\"").find(it)?.groupValues?.get(1) }
             ?: error("login response did not contain an access token")
+
+        client.get().uri("/api/v2/deployment-applications/capabilities")
+            .headers { it.setBearerAuth(accessToken) }
+            .exchange().expectStatus().isOk
+            .expectBody()
+            .jsonPath("$.deployment.weightedCanary").isEqualTo(false)
+            .jsonPath("$.deployment.configuredTrafficAdapters").isEmpty
+            .jsonPath("$.orchestrators[0]").isEqualTo("LOCAL")
 
         client.get().uri("/api/namespaces")
             .exchange()

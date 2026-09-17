@@ -28,6 +28,12 @@ JSON API, and the server has no template-rendering controller.
   static shell; its API requests still require administrator authorization.
 - `/custom-resources.html`: creates a registered custom resource when the
   signed-in user has `create` RBAC permission for that CRD and namespace.
+- `/deployments.html`: registers deployment applications, saves configurations,
+  starts deployments, and displays live execution phases with approval, abort,
+  rollback, and preview connection controls. Uses the authenticated deployment API.
+
+For a cluster-free, explicitly labelled UI preview and browser checks, see
+[deployment UI verification](dev/ui/README.md). Preview data is not a real deployment.
 
 ## Cluster resources
 

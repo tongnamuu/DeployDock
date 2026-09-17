@@ -1,5 +1,6 @@
 package com.deploy.k8s.DeployDock.deployment
 
+import com.deploy.k8s.DeployDock.config.DeployDockTemporalProperties
 import jakarta.validation.Valid
 import org.springframework.http.HttpStatus
 import org.springframework.security.core.annotation.AuthenticationPrincipal
@@ -15,7 +16,17 @@ import reactor.core.publisher.Mono
 
 @RestController
 @RequestMapping("/api/v2/deployment-applications")
-class DeploymentController(private val deployments: DeploymentProvider) {
+class DeploymentController(
+    private val deployments: DeploymentProvider,
+    private val workloads: KubernetesDeploymentWorkloads,
+    private val temporal: DeployDockTemporalProperties,
+) {
+    @GetMapping("/capabilities")
+    fun capabilities(): DeploymentConsoleCapabilities = DeploymentConsoleCapabilities(
+        workloads.capabilities(),
+        if (temporal.enabled) DeploymentOrchestrator.entries.toSet() else setOf(DeploymentOrchestrator.LOCAL),
+    )
+
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
     fun registerApplication(
@@ -69,3 +80,8 @@ class DeploymentController(private val deployments: DeploymentProvider) {
         @RequestBody request: DeploymentActionRequest,
     ): Mono<DeploymentRun> = deployments.action(requireNotNull(jwt.subject), applicationId, runId, request.action, request.requestId).map { it.copy(snapshot = null) }
 }
+
+data class DeploymentConsoleCapabilities(
+    val deployment: DeploymentCapabilities,
+    val orchestrators: Set<DeploymentOrchestrator>,
+)
