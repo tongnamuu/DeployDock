@@ -19,18 +19,24 @@ class KubernetesDeploymentWorkloads(
     }
 
     fun capabilities() = DeploymentCapabilities(
-        setOf(WebDeploymentStrategy.ROLLING, WebDeploymentStrategy.BLUE_GREEN) +
-            if (adapters.isNotEmpty()) setOf(WebDeploymentStrategy.CANARY) else emptySet(),
+        WebDeploymentStrategy.entries.toSet(),
         BatchDeploymentMode.entries.toSet(), adapters.keys,
     )
 
     fun validateTraffic(config: DeploymentConfiguration) {
-        if (config.webStrategy == WebDeploymentStrategy.CANARY) traffic(config).validate(config)
+        val hasTrafficSettings = config.trafficAdapter != null || config.canaryRoute != null || config.trafficOptions.isNotEmpty()
+        if (hasTrafficSettings && config.webStrategy != WebDeploymentStrategy.CANARY) {
+            throw DeploymentValidationException("traffic settings require CANARY")
+        }
+        if (config.trafficOptions.isNotEmpty() && !config.usesWeightedTraffic()) {
+            throw DeploymentValidationException("trafficOptions require an explicit traffic adapter")
+        }
+        if (config.usesWeightedTraffic()) traffic(config).validate(config)
     }
 
     private fun traffic(config: DeploymentConfiguration): CanaryTrafficAdapter {
         val id = config.trafficAdapter ?: if (config.canaryRoute != null) "gateway-api" else null
-        return adapters[id] ?: throw DeploymentValidationException("CANARY requires a configured traffic adapter; available: ${adapters.keys}")
+        return adapters[id] ?: throw DeploymentValidationException("weighted canary requires the selected traffic adapter; available: ${adapters.keys}")
     }
     private val client = deploymentClient(client)
     fun authorize(principal: String, app: DeploymentApplication, config: DeploymentConfiguration) {
@@ -42,7 +48,7 @@ class KubernetesDeploymentWorkloads(
             listOf(ResourcePermission("apps", "deployments", listOf("get", "create", "update")),
                 ResourcePermission("", "services", listOf("get", "list", "create", "update")),
                 ResourcePermission("discovery.k8s.io", "endpointslices", listOf("list"))) +
-                if (config.webStrategy == WebDeploymentStrategy.CANARY) traffic(config).permissions else emptyList()
+                if (config.usesWeightedTraffic()) traffic(config).permissions else emptyList()
         }
         authorization.authorize(principal, app.namespace, permissions)
     }
@@ -67,7 +73,7 @@ class KubernetesDeploymentWorkloads(
         }
         val key = source.spec.selector.matchLabels.orEmpty().keys.firstOrNull { it in service.spec.selector }
             ?: throw DeploymentValidationException("Service and Deployment need a shared matchLabels key to isolate the new version")
-        val trafficSnapshot = if (config.webStrategy == WebDeploymentStrategy.CANARY) traffic(config).capture(app, config) else null
+        val trafficSnapshot = if (config.usesWeightedTraffic()) traffic(config).capture(app, config) else null
         return DeploymentSnapshot(claim(source, app.id), claim(service, app.id), isolationKey = key, traffic = trafficSnapshot)
     }
 
@@ -108,7 +114,11 @@ class KubernetesDeploymentWorkloads(
         return DeploymentExecutionResult("WEB_${config.webStrategy}", listOf(
             DeploymentResourcePlan("apps/v1", "Deployment", app.namespace, name, "new version"),
             DeploymentResourcePlan("v1", "Service", app.namespace, previewName, "preview only"),
-        ), previewName, preview.spec.ports.map { it.port })
+        ), previewName, preview.spec.ports.map { it.port }, trafficMode = when {
+            config.usesWeightedTraffic() -> CanaryTrafficMode.WEIGHTED
+            config.webStrategy == WebDeploymentStrategy.CANARY -> CanaryTrafficMode.PREVIEW_ONLY
+            else -> null
+        })
     }
 
     fun previewReady(app: DeploymentApplication, config: DeploymentConfiguration, run: DeploymentRun): Boolean {

@@ -26,13 +26,18 @@ Temporal, Argo Rollouts, DeployDock CRD 없이도 호출할 수 있다.
 |---|---|
 | 롤링 | 기존 `apps/v1 Deployment` |
 | 블루그린 및 신규 Pod 테스트 | 기존 Deployment와 selector 기반 Service, `discovery.k8s.io/v1 EndpointSlice`, 추가 Pod 용량 |
+| preview-only 카나리 | 블루그린과 같은 표준 리소스; 테스트 후 수동 승격, 어댑터 불필요 |
 | 개별·그룹 배치 배포 | 기존 `batch/v1 CronJob`; 실행 중 Job은 변경하지 않음 |
 | 정확한 가중치 설정 기반 카나리 | 해당 환경에서 구현·등록한 `CanaryTrafficAdapter`와 트래픽 분배기 |
 | 기본 상태 저장 | 기존 제어 namespace와 ConfigMap 읽기·쓰기 권한 |
 
 기본 Kubernetes Service만으로 요청 비율을 10%/90%로 제어한다고 약속하지 않는다.
-어댑터 없는 환경에서는 롤링·블루그린·배치를 사용하고, 가중치 카나리 설정은 명시적으로 거부한다.
+어댑터 없는 환경에서도 카나리 신규 Pod 배포·preview 테스트·승격·롤백을 지원한다.
+가중치 분배가 필요할 때만 어댑터를 선택한다. 명시적으로 선택한 어댑터가 없으면 설정을 거부한다.
+기본 실행기는 Ingress 종류를 판별하거나 Ingress를 조회·변경하지 않는다.
 `capabilities()`는 등록된 기능 목록이지 클러스터 권한·controller 정상 동작을 검사한 결과가 아니다.
+`webStrategies`에는 기본적으로 `CANARY`도 포함한다. 가중치 분배 어댑터 유무는 `weightedCanary`와
+`configuredTrafficAdapters`로 별도 확인하며, 등록된 어댑터를 자동 선택하지 않는다.
 StatefulSet·DaemonSet·임의 CRD 배포는 현재 구현 범위가 아니다.
 
 ## 서버 없이 호출하기
@@ -99,6 +104,15 @@ fun main() {
 
 ## 트래픽 어댑터
 
+`webStrategy=CANARY`만 지정하면 신규 버전을 격리 배포하는 `PREVIEW_ONLY` 모드다.
+`AWAITING_APPROVAL`에서 preview를 테스트하고 바로 `PROMOTE`한다. 이 모드는 블루그린과
+같은 승격 절차를 사용하며, 운영 트래픽 비율을 나누는 카나리 실험을 수행하지 않는다.
+`canarySteps`는 무시하며 `ADVANCE`는 거부한다. 결과의 `trafficMode`로 모드를 구분한다.
+
+가중치 분배를 원할 때만 `trafficAdapter` 또는 호환 필드 `canaryRoute`를 명시한다.
+이 경우 `WEIGHTED` 모드가 되고 각 `canarySteps`를 `ADVANCE`한 뒤 승격해야 한다.
+`trafficOptions`만 지정하거나 사용할 수 없는 어댑터를 선택하면 저장 시 거부한다.
+
 `CanaryTrafficAdapter`는 라이브러리가 정의한 작은 확장 인터페이스다.
 환경에서 이미 사용하는 분배기를 연결하며, 모든 어댑터가 Gateway API를 사용할 필요는 없다.
 
@@ -137,7 +151,10 @@ NGINX·Istio 등의 실제 어댑터는 아직 포함하지 않았다.
 ## 검증 범위
 
 독립 모듈 테스트는 Spring·Temporal·Gateway 어댑터 클래스가 classpath에 없음을 확인하고
-mock Kubernetes에서 롤링, 블루그린 preview, 미지원 카나리 거부, 사용자 정의 어댑터·저장소를 검증한다.
+mock Kubernetes에서 롤링, 블루그린 preview, 기본 카나리 승인·승격·중단·실패 복구·롤백,
+명시한 어댑터 누락 거부, 사용자 정의 어댑터·저장소를 검증한다.
+Ingress 없음 및 `nginx`·`cilium` ingressClassName 객체를 둔 테스트에서 기존 Ingress 객체 유지와
+트래픽 리소스 권한 불필요를 확인한다. 실제 NGINX·Cilium controller를 구동한 테스트는 아니다.
 서버 통합 테스트는 승인·복구·Gateway 상태 확인·Temporal Workflow를 검증한다.
 이 테스트는 실제 클러스터의 admission 정책, CNI, HTTP 트래픽 분포를 검증하지 않는다.
 환경별 RBAC·NetworkPolicy·quota·이미지 접근·GitOps/HPA 충돌을 별도 검증해야 한다.

@@ -62,8 +62,30 @@ curl -X POST "http://localhost:8080/api/v2/deployment-applications/$APP_ID/runs/
 
 ## 카나리 흐름
 
-핵심 실행기는 `CanaryTrafficAdapter`에 트래픽 제어를 위임한다. 기본 환경에서는 어댑터가
-없으므로 가중치 카나리 설정을 저장할 때 명시적으로 거부한다. 롤링·블루그린·배치에는 필요 없다.
+### 기본: 신규 버전 배포와 테스트
+
+Ingress가 없거나 NGINX·Cilium 등 어떤 종류이든 기본 배포 실행기는 Ingress를 조회·변경하지 않는다.
+기존 Ingress가 참조하는 운영 Service 이름을 유지하고, 신규 버전은 별도 preview Service로 테스트한다.
+
+```json
+{
+  "image": "registry.example.com/shop:v2",
+  "webStrategy": "CANARY"
+}
+```
+
+`trafficAdapter`와 `canaryRoute`를 생략하면 `result.trafficMode=PREVIEW_ONLY`다.
+어댑터가 서버에 등록돼 있어도 자동 선택하지 않는다. 준비가 끝나면 `AWAITING_APPROVAL`에서
+preview를 테스트하고 바로 `PROMOTE`할 수 있다. `ABORT`·실패 복구·성공 후 `ROLLBACK`도 지원한다.
+승인 전에는 운영 Service selector를 유지하고, 승격 후에는 블루그린과 같은 전환 과정을 거친다.
+이 모드는 운영 트래픽 일부를 신규 버전에 흘리는 가중치 카나리가 아니다.
+`canarySteps`는 사용하지 않으며 `ADVANCE`는 거부한다. 신규 Pod가 준비되기 전 승격도 거부한다.
+
+### 선택: 운영 트래픽 비율 조절
+
+운영 요청을 단계별로 분배하려는 경우에만 `trafficAdapter` 또는 기존 `canaryRoute`를 지정한다.
+이때 `result.trafficMode=WEIGHTED`이며 핵심 실행기는 `CanaryTrafficAdapter`에 트래픽 제어를 위임한다.
+명시한 어댑터가 없으면 설정을 거부한다. 잘못된 어댑터 설정을 preview-only로 자동 변경하지 않는다.
 기본 제공하는 선택형 어댑터는 Gateway API `gateway.networking.k8s.io/v1 HTTPRoute`다.
 서버에서 사용하려면 `deploydock.deployment.gateway-api.enabled=true`를 지정한다.
 이를 지원하는 Gateway controller가 이미 설치되어 있고, HTTPRoute가 운영 Service를 가리켜야 한다.
@@ -71,7 +93,7 @@ curl -X POST "http://localhost:8080/api/v2/deployment-applications/$APP_ID/runs/
 일반 Service의 replica 비율을 정확한 요청 비율로 간주하지 않는다.
 Ingress NGINX와 서비스 메시용 어댑터는 아직 없다.
 
-설정 예:
+가중치 분배 설정 예:
 
 ```json
 {

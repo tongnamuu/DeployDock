@@ -25,6 +25,7 @@ data class DeploymentCapabilities(
     val webStrategies: Set<WebDeploymentStrategy>,
     val batchModes: Set<BatchDeploymentMode>,
     val configuredTrafficAdapters: Set<String>,
+    val weightedCanary: Boolean = configuredTrafficAdapters.isNotEmpty(),
 )
 
 fun interface DeploymentAuthorization {

@@ -199,7 +199,10 @@ When `deploydock.temporal.enabled=true`, Temporal workflows drive reconciliation
 Selecting `TEMPORAL` while disabled returns `503`; `LOCAL` is an explicit choice.
 
 Web deployments target existing `apps/v1 Deployment` workloads. Blue-green
-creates an isolated preview Service and waits for manual approval. Weighted canary
+creates an isolated preview Service and waits for manual approval. Canary also
+supports preview deployment, testing, promotion, and rollback without a traffic
+adapter. Existing Ingress objects and their controller choice are left untouched.
+This preview-only mode does not split production traffic. Weighted canary
 uses an explicitly registered `CanaryTrafficAdapter`; Gateway API is optional.
 The bundled Gateway adapter is disabled by default. Enable it with
 `deploydock.deployment.gateway-api.enabled=true` only when a suitable controller
@@ -211,25 +214,30 @@ permissions, approval, rollback, recovery, and current limits.
 For the implementation walkthrough, file responsibilities, and state transitions,
 see [deployment code guide](DEPLOYMENT_CODE.md).
 
-With Temporal and the optional Gateway adapter enabled, register a web application
-and save canary/blue-green configurations:
+Register a web application and save preview-only canary/blue-green configurations.
+Neither Temporal nor a Gateway/Ingress adapter is required:
 
 ```shell
 curl -X POST http://localhost:8080/api/v2/deployment-applications \
   -H "Authorization: Bearer $ACCESS_TOKEN" \
   -H 'Content-Type: application/json' \
-  -d '{"name":"shop-web","namespace":"team-a","kind":"WEB","orchestrator":"TEMPORAL"}'
+  -d '{"name":"shop-web","namespace":"team-a","kind":"WEB"}'
 
 curl -X POST http://localhost:8080/api/v2/deployment-applications/$APP_ID/configurations \
   -H "Authorization: Bearer $ACCESS_TOKEN" \
   -H 'Content-Type: application/json' \
-  -d '{"image":"registry.example.com/shop:v2","replicas":3,"webStrategy":"CANARY","trafficAdapter":"gateway-api","trafficOptions":{"routeName":"shop-web"},"canarySteps":[10,50]}'
+  -d '{"image":"registry.example.com/shop:v2","replicas":3,"webStrategy":"CANARY"}'
 
 curl -X POST http://localhost:8080/api/v2/deployment-applications/$APP_ID/configurations \
   -H "Authorization: Bearer $ACCESS_TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"image":"registry.example.com/shop:v3","replicas":3,"webStrategy":"BLUE_GREEN"}'
 ```
+
+For preview-only canary, test `result.previewService` and send `PROMOTE` when ready.
+`result.trafficMode` is `PREVIEW_ONLY`; `ADVANCE` is rejected because there is no
+weighted production routing. To opt into weighted routing, explicitly select a
+registered adapter as shown in [the operations guide](DEPLOYMENTS.md).
 
 Batch applications support grouped and individual deployment modes:
 

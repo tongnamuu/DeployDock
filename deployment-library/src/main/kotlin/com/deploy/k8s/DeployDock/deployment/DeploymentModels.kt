@@ -23,6 +23,8 @@ enum class BatchDeploymentMode {
     INDIVIDUAL,
 }
 
+enum class CanaryTrafficMode { PREVIEW_ONLY, WEIGHTED }
+
 enum class DeploymentRunStatus {
     QUEUED,
     RUNNING,
@@ -145,6 +147,7 @@ data class DeploymentExecutionResult(
     val previewService: String? = null,
     val previewPorts: List<Int> = emptyList(),
     val canaryWeight: Int = 0,
+    val trafficMode: CanaryTrafficMode? = null,
 )
 
 data class DeploymentResourcePlan(
@@ -163,3 +166,6 @@ class DeploymentConflictException(message: String) : RuntimeException(message)
 class DeploymentUnavailableException(message: String) : RuntimeException(message)
 
 fun DeploymentRun.terminal(): Boolean = status in setOf(DeploymentRunStatus.SUCCEEDED, DeploymentRunStatus.FAILED, DeploymentRunStatus.ABORTED, DeploymentRunStatus.ROLLED_BACK)
+
+fun DeploymentConfiguration.usesWeightedTraffic(): Boolean =
+    webStrategy == WebDeploymentStrategy.CANARY && (trafficAdapter != null || canaryRoute != null)

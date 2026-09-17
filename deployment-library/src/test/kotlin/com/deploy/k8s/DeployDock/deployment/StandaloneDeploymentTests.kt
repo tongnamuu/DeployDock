@@ -3,13 +3,19 @@ package com.deploy.k8s.DeployDock.deployment
 import io.fabric8.kubernetes.api.model.ServiceBuilder
 import io.fabric8.kubernetes.api.model.apps.DeploymentBuilder
 import io.fabric8.kubernetes.api.model.apps.DeploymentStatusBuilder
+import io.fabric8.kubernetes.api.model.discovery.v1.EndpointSliceBuilder
+import io.fabric8.kubernetes.api.model.networking.v1.IngressBuilder
 import io.fabric8.kubernetes.client.KubernetesClient
 import io.fabric8.kubernetes.client.server.mock.EnableKubernetesMockClient
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.params.ParameterizedTest
+import org.junit.jupiter.params.provider.ValueSource
 import java.time.Clock
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 @EnableKubernetesMockClient(crud = true, https = false)
@@ -36,7 +42,8 @@ class StandaloneDeploymentTests {
         assertTrue(reconciler.reconcile(app.id, run.id))
         assertEquals(DeploymentRunStatus.SUCCEEDED, api.runs(app.id).single().status)
         assertEquals(emptySet(), api.capabilities().configuredTrafficAdapters)
-        assertEquals(setOf(WebDeploymentStrategy.ROLLING, WebDeploymentStrategy.BLUE_GREEN), api.capabilities().webStrategies)
+        assertEquals(WebDeploymentStrategy.entries.toSet(), api.capabilities().webStrategies)
+        assertFalse(api.capabilities().weightedCanary)
     }
 
     @Test
@@ -57,7 +64,7 @@ class StandaloneDeploymentTests {
     }
 
     @Test
-    fun `unsupported canary is rejected without silently installing an adapter`() {
+    fun `explicit weighted canary is rejected when selected adapter is unavailable`() {
         val store = KubernetesDeploymentStore(kubernetes, "team-a")
         val api = DeploymentClient(store, KubernetesDeploymentWorkloads(kubernetes))
         val app = api.registerApplication("client", RegisterApplicationRequest("web", "team-a", ApplicationKind.WEB))
@@ -65,6 +72,122 @@ class StandaloneDeploymentTests {
             api.saveConfiguration("client", app.id, SaveDeploymentConfigurationRequest("example/web:v2", webStrategy = WebDeploymentStrategy.CANARY, canaryRoute = "web"))
         }
         assertTrue(api.configurations(app.id).isEmpty())
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = ["none", "nginx", "cilium"])
+    fun `preview canary promotes and rolls back without reading or changing ingress`(ingressClass: String) {
+        val ingress = if (ingressClass == "none") null else kubernetes.network().v1().ingresses().inNamespace("team-a")
+            .resource(IngressBuilder().withNewMetadata().withName("web").endMetadata().withNewSpec()
+                .withIngressClassName(ingressClass).withNewDefaultBackend().withNewService().withName("web")
+                .withNewPort().withNumber(80).endPort().endService().endDefaultBackend().endSpec().build()).create()
+        val f = nativeCanary()
+        val deploymentUid = kubernetes.apps().deployments().inNamespace("team-a").withName("web").get().metadata.uid
+        val serviceUid = kubernetes.services().inNamespace("team-a").withName("web").get().metadata.uid
+        f.tick(2)
+        val name = KubernetesDeploymentWorkloads.candidateName(f.run)
+        val preview = assertNotNull(f.current().result?.previewService)
+        assertEquals(CanaryTrafficMode.PREVIEW_ONLY, f.current().result?.trafficMode)
+        assertNull(f.current().snapshot?.traffic)
+        assertNull(f.current().snapshot?.route)
+        assertEquals(mapOf("app" to "web"), activeSelector())
+        assertFailsWith<DeploymentConflictException> { f.action(DeploymentAction.PROMOTE) }
+        ready(name)
+        endpoints(preview, name)
+        f.tick()
+        assertEquals(DeploymentRunStatus.AWAITING_APPROVAL, f.current().status)
+        assertEquals(0, f.current().result?.canaryWeight)
+        assertFailsWith<DeploymentConflictException> { f.action(DeploymentAction.ADVANCE) }
+        f.action(DeploymentAction.PROMOTE)
+        f.tick(3)
+        assertEquals(DeploymentRunStatus.PROMOTING, f.current().status)
+        endpoints("web", name)
+        f.tick(2)
+        ready("web")
+        f.tick()
+        endpoints("web", "web")
+        f.tick()
+        assertEquals(DeploymentRunStatus.SUCCEEDED, f.current().status)
+        assertEquals(deploymentUid, kubernetes.apps().deployments().inNamespace("team-a").withName("web").get().metadata.uid)
+        assertEquals(serviceUid, kubernetes.services().inNamespace("team-a").withName("web").get().metadata.uid)
+        assertEquals(mapOf("app" to "web"), activeSelector())
+        f.action(DeploymentAction.ROLLBACK)
+        f.tick()
+        ready(name)
+        endpoints("web", name)
+        f.tick(2)
+        ready("web")
+        f.tick()
+        endpoints("web", "web")
+        f.tick()
+        assertEquals(DeploymentRunStatus.ROLLED_BACK, f.current().status)
+        assertEquals("example/web:v1", kubernetes.apps().deployments().inNamespace("team-a").withName("web").get().spec.template.spec.containers.single().image)
+        assertEquals(0, kubernetes.apps().deployments().inNamespace("team-a").withName(name).get().spec.replicas)
+        assertEquals(mapOf("app" to "web"), activeSelector())
+        assertEquals(ingress, kubernetes.network().v1().ingresses().inNamespace("team-a").withName("web").get())
+        assertTrue(f.permissions.none { it.resource in setOf("ingresses", "httproutes") })
+    }
+
+    @Test
+    fun `preview canary abort restores without a traffic adapter`() {
+        val f = nativeCanary()
+        f.tick(2)
+        f.action(DeploymentAction.ABORT)
+        f.tick(3)
+        assertEquals(DeploymentRunStatus.ABORTED, f.current().status)
+        assertEquals(mapOf("app" to "web"), activeSelector())
+        assertEquals(0, kubernetes.apps().deployments().inNamespace("team-a")
+            .withName(KubernetesDeploymentWorkloads.candidateName(f.run)).get().spec.replicas)
+    }
+
+    @Test
+    fun `preview canary readiness failure restores without a traffic adapter`() {
+        val f = nativeCanary()
+        f.tick(2)
+        val name = KubernetesDeploymentWorkloads.candidateName(f.run)
+        ready(name)
+        endpoints(KubernetesDeploymentWorkloads.previewName(f.run), name)
+        f.tick()
+        val resource = kubernetes.apps().deployments().inNamespace("team-a").withName(name).get()
+        resource.status.availableReplicas = 0
+        kubernetes.apps().deployments().inNamespace("team-a").resource(resource).updateStatus()
+        f.tick(3)
+        assertEquals(DeploymentRunStatus.FAILED, f.current().status)
+        assertNotNull(f.current().error)
+        assertNull(f.current().recoveryError)
+        assertEquals(mapOf("app" to "web"), activeSelector())
+    }
+
+    @Test
+    fun `registered adapter is not selected implicitly for preview canary`() {
+        val adapter = object : CanaryTrafficAdapter {
+            override val id = "unused"
+            override val permissions: List<ResourcePermission> get() = error("must not request traffic permissions")
+            override fun validate(configuration: DeploymentConfiguration) = error("must not validate traffic")
+            override fun capture(application: DeploymentApplication, configuration: DeploymentConfiguration): TrafficSnapshot = error("must not snapshot traffic")
+            override fun setWeight(application: DeploymentApplication, configuration: DeploymentConfiguration, run: DeploymentRun, weight: Int?) = error("must not route traffic")
+            override fun isReady(application: DeploymentApplication, configuration: DeploymentConfiguration): Boolean = error("must not read traffic")
+        }
+        val f = nativeCanary(listOf(adapter))
+        assertTrue(f.api.capabilities().weightedCanary)
+        f.tick(2)
+        assertEquals(CanaryTrafficMode.PREVIEW_ONLY, f.current().result?.trafficMode)
+        f.action(DeploymentAction.ABORT)
+        f.tick(3)
+        assertEquals(DeploymentRunStatus.ABORTED, f.current().status)
+    }
+
+    @Test
+    fun `ambiguous or missing traffic adapter settings never downgrade silently`() {
+        val f = nativeCanary()
+        listOf(
+            SaveDeploymentConfigurationRequest("example/web:v2", webStrategy = WebDeploymentStrategy.CANARY, trafficOptions = mapOf("routeName" to "web")),
+            SaveDeploymentConfigurationRequest("example/web:v2", webStrategy = WebDeploymentStrategy.CANARY, trafficAdapter = "missing"),
+            SaveDeploymentConfigurationRequest("example/web:v2", webStrategy = WebDeploymentStrategy.BLUE_GREEN, trafficAdapter = "missing"),
+        ).forEach { request ->
+            assertFailsWith<DeploymentValidationException> { f.api.saveConfiguration("client", f.run.applicationId, request) }
+        }
+        assertEquals(1, f.api.configurations(f.run.applicationId).size)
     }
 
     @Test
@@ -89,8 +212,52 @@ class StandaloneDeploymentTests {
         assertTrue(workloads.canaryRouteReady(app, config))
         assertEquals(setOf(adapter.id), api.capabilities().configuredTrafficAdapters)
         assertTrue(WebDeploymentStrategy.CANARY in api.capabilities().webStrategies)
+        assertTrue(api.capabilities().weightedCanary)
+        reconciler.reconcile(app.id, run.id)
+        assertEquals(CanaryTrafficMode.WEIGHTED, api.runs(app.id).single().result?.trafficMode)
         val mapper = deploymentMapper()
         assertEquals(store.get(app.id), mapper.readValue(mapper.writeValueAsBytes(store.get(app.id)), DeploymentRecord::class.java))
+    }
+
+    private fun nativeCanary(adapters: List<CanaryTrafficAdapter> = emptyList()): NativeCanary {
+        seed()
+        endpoints("web", "web")
+        val permissions = mutableListOf<ResourcePermission>()
+        val store = KubernetesDeploymentStore(kubernetes, "team-a")
+        val workloads = KubernetesDeploymentWorkloads(kubernetes, adapters, DeploymentAuthorization { _, _, requested -> permissions.addAll(requested) })
+        val api = DeploymentClient(store, workloads)
+        val app = api.registerApplication("client", RegisterApplicationRequest("web", "team-a", ApplicationKind.WEB))
+        val config = api.saveConfiguration("client", app.id, SaveDeploymentConfigurationRequest(
+            "example/web:v2", webStrategy = WebDeploymentStrategy.CANARY))
+        val run = api.submitRun("client", app.id, SubmitDeploymentRunRequest(config.id, "release"))
+        return NativeCanary(api, DeploymentReconciler(store, workloads, Clock.systemUTC()), run, permissions)
+    }
+
+    private data class NativeCanary(
+        val api: DeploymentClient,
+        val reconciler: DeploymentReconciler,
+        val run: DeploymentRun,
+        val permissions: List<ResourcePermission>,
+    ) {
+        fun tick(count: Int = 1) { repeat(count) { reconciler.reconcile(run.applicationId, run.id) } }
+        fun current() = api.runs(run.applicationId).single()
+        fun action(action: DeploymentAction) = api.action("client", run.applicationId, run.id, action, action.name)
+    }
+
+    private fun activeSelector() = kubernetes.services().inNamespace("team-a").withName("web").get().spec.selector
+
+    private fun endpoints(serviceName: String, deployment: String) {
+        val slice = EndpointSliceBuilder().withNewMetadata().withName("$serviceName-endpoints")
+            .addToLabels("kubernetes.io/service-name", serviceName).endMetadata().withAddressType("IPv4")
+            .addNewEndpoint().withAddresses("10.1.1.1").withNewConditions().withReady(true).endConditions()
+            .withNewTargetRef().withKind("Pod").withName("$deployment-rs-pod").endTargetRef().endEndpoint().build()
+        val operation = kubernetes.discovery().v1().endpointSlices().inNamespace("team-a")
+        val existing = operation.withName(slice.metadata.name).get()
+        if (existing == null) operation.resource(slice).create()
+        else {
+            slice.metadata.resourceVersion = existing.metadata.resourceVersion
+            operation.resource(slice).update()
+        }
     }
 
     private fun seed() {

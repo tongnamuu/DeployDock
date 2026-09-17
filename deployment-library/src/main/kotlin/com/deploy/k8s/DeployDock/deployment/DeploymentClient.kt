@@ -90,10 +90,13 @@ class DeploymentClient(
             if (action != DeploymentAction.ABORT && run.status != DeploymentRunStatus.AWAITING_APPROVAL) {
                 throw DeploymentConflictException("new version is not ready for approval")
             }
-            if (action == DeploymentAction.ADVANCE && (run.webStrategy != WebDeploymentStrategy.CANARY || run.step + 1 >= config.canarySteps.size)) {
+            if (action == DeploymentAction.ADVANCE && !config.usesWeightedTraffic()) {
+                throw DeploymentConflictException("ADVANCE requires weighted traffic; test the preview and use PROMOTE")
+            }
+            if (action == DeploymentAction.ADVANCE && run.step + 1 >= config.canarySteps.size) {
                 throw DeploymentConflictException("no remaining canary step")
             }
-            if (action == DeploymentAction.PROMOTE && run.webStrategy == WebDeploymentStrategy.CANARY && run.step != config.canarySteps.lastIndex) {
+            if (action == DeploymentAction.PROMOTE && config.usesWeightedTraffic() && run.step != config.canarySteps.lastIndex) {
                 throw DeploymentConflictException("complete the canary steps before promotion")
             }
             record.copy(runs = record.runs.map { if (it.id == runId) it.copy(action = action, actionBy = principal,
@@ -107,7 +110,10 @@ class DeploymentClient(
         if (request.progressDeadlineSeconds !in 30..3600) throw DeploymentValidationException("progress deadline must be between 30 and 3600 seconds")
         if (app.kind == ApplicationKind.WEB) {
             if (request.webStrategy == null || request.batchMode != null || request.batchTargets.isNotEmpty()) throw DeploymentValidationException("web strategy is required and batch fields are not allowed")
-            if (request.canarySteps.isEmpty() || request.canarySteps.any { it !in 1..99 } || request.canarySteps.zipWithNext().any { it.first >= it.second }) throw DeploymentValidationException("canarySteps must strictly increase between 1 and 99")
+            if (request.webStrategy == WebDeploymentStrategy.CANARY && (request.trafficAdapter != null || request.canaryRoute != null) &&
+                (request.canarySteps.isEmpty() || request.canarySteps.any { it !in 1..99 } || request.canarySteps.zipWithNext().any { it.first >= it.second })) {
+                throw DeploymentValidationException("canarySteps must strictly increase between 1 and 99")
+            }
         } else {
             if (request.batchMode == null || request.webStrategy != null || request.canaryRoute != null || request.trafficAdapter != null || request.trafficOptions.isNotEmpty()) throw DeploymentValidationException("batch mode is required and web fields are not allowed")
             val count = request.batchTargets.size

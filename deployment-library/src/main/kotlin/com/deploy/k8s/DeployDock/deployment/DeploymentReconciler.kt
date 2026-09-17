@@ -66,6 +66,7 @@ class DeploymentReconciler(
                 }
             }
             "ROUTE" -> {
+                if (!config.usesWeightedTraffic()) throw DeploymentValidationException("weighted traffic is not configured")
                 if (!workloads.previewReady(app, config, run)) throw DeploymentValidationException("canary lost readiness")
                 val weight = config.canarySteps[run.step]
                 workloads.setCanaryWeight(app, config, run, weight)
@@ -80,7 +81,7 @@ class DeploymentReconciler(
             "SWITCH_WAIT" -> {
                 if (!workloads.previewReady(app, config, run)) throw DeploymentValidationException("promoted Deployment lost readiness")
                 if (!workloads.endpointsReady(app.namespace, requireNotNull(app.serviceName), run.id)) return run
-                if (config.webStrategy == WebDeploymentStrategy.CANARY) {
+                if (config.usesWeightedTraffic()) {
                     workloads.setCanaryWeight(app, config, run, null)
                     if (!workloads.canaryRouteReady(app, config)) return run
                 }
@@ -117,7 +118,7 @@ class DeploymentReconciler(
                         workloads.restoreRolling(app, config, run)
                         if (!workloads.rollingReady(app, run)) return run
                         workloads.switchService(app, run, restore = true)
-                        if (config.webStrategy == WebDeploymentStrategy.CANARY) workloads.setCanaryWeight(app, config, run, null)
+                        if (config.usesWeightedTraffic()) workloads.setCanaryWeight(app, config, run, null)
                     }
                 }
                 run.copy(phase = "RESTORE_WAIT")
@@ -127,7 +128,7 @@ class DeploymentReconciler(
                     if (!workloads.rollingReady(app, run)) return run
                     if (config.webStrategy != WebDeploymentStrategy.ROLLING) {
                         if (!workloads.originalEndpointsReady(app, run)) return run
-                        if (config.webStrategy == WebDeploymentStrategy.CANARY && !workloads.canaryRouteReady(app, config)) return run
+                        if (config.usesWeightedTraffic() && !workloads.canaryRouteReady(app, config)) return run
                         workloads.retirePreview(app, run)
                     }
                 }

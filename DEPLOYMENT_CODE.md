@@ -123,11 +123,17 @@ EndpointSlice 대상은 Pod 이름의 Deployment 접두사로 확인한다. 이 
 ## 5. 카나리에서 추가되는 코드
 
 카나리도 신규 Pod와 preview를 먼저 만들고 `APPROVAL`에서 기다린다.
-`DeploymentClient.action()`이 `ADVANCE`를 저장하면 다음 `advance()` 호출이
+`DeploymentConfiguration.usesWeightedTraffic()`은 명시적인 어댑터 선택 또는 기존 `canaryRoute`
+설정 여부로 트래픽 제어 사용을 결정한다. 등록된 어댑터 목록만 보고 자동 선택하지 않는다.
+선택하지 않았다면 결과는 `PREVIEW_ONLY`이며 preview 테스트 후 바로 `PROMOTE`한다.
+이 경우 `ADVANCE`는 거부하고 snapshot·권한 검사·승격·복구에서 트래픽 어댑터를 호출하지 않는다.
+운영 Service selector 전환과 원본 Deployment 복귀는 블루그린과 같다. 운영 요청 비율을 나누지는 않는다.
+
+어댑터를 명시하면 `WEIGHTED`가 된다. `DeploymentClient.action()`이 `ADVANCE`를 저장하면 다음 `advance()` 호출이
 `step`을 올리고 `ROUTE` 단계로 이동한다.
 
 `KubernetesDeploymentWorkloads`는 HTTPRoute를 직접 다루지 않고 등록된 어댑터에 위임한다.
-어댑터가 없으면 가중치 카나리 설정을 거부하며, 롤링·블루그린·배치에는 영향이 없다.
+명시적으로 선택한 어댑터가 없으면 가중치 카나리 설정을 거부하며 preview-only로 자동 변경하지 않는다.
 다음은 선택형 Gateway 어댑터의 동작이다. `canarySteps=[10, 50]`인 경우 첫 단계에서 `setCanaryWeight()`는 운영 Service backend에
 90, preview backend에 10을 넣는다. 다음 단계는 50과 50이다. `routeReady()`가 해당
 parent의 최신 generation에 대한 `Accepted`와 `ResolvedRefs`를 확인해야 다시 승인 대기로 돌아간다.
@@ -200,5 +206,5 @@ ConfigMap 저장과 워크로드 변경은 하나의 트랜잭션이 아니다. 
 
 일반 테스트는 mock API 서버의 상태를 테스트 코드에서 갱신하므로 실제 Kubernetes controller나
 Gateway 데이터 경로까지 검증하지 않는다. 실 클러스터 테스트는 별도 환경변수가 있어야 실행된다.
-라이브러리 분리 후 자동 테스트 29개 통과, 실 클러스터 테스트 1개 미실행을 확인했다.
+Ingress 독립 preview 카나리 추가 후 자동 테스트 36개 통과, 실 클러스터 테스트 1개 미실행을 확인했다.
 모든 Kubernetes 환경에서 실행을 검증했다는 의미는 아니다.
