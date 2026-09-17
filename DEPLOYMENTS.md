@@ -4,6 +4,8 @@ DeployDock은 기존 `apps/v1 Deployment`와 `Service`를 직접 사용한다. A
 DeployDock 상위 CRD 설치는 필요하지 않다. 실행 상태와 복구용 스냅샷은
 `deploydock-system`의 ConfigMap에 저장한다.
 
+파일별 역할과 내부 호출·상태 전이는 [배포 코드 읽기](DEPLOYMENT_CODE.md)를 참고한다.
+
 ## 준비
 
 - 웹 앱 등록 시 `name`은 기존 Deployment 이름이다. Service 이름이 다르면 `serviceName`을 지정한다.

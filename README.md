@@ -201,6 +201,8 @@ Argo Rollouts is not required. Promotion preserves the original Deployment and
 Service names. Batch modes update existing CronJob templates, not running Jobs.
 See [deployment operations and preview testing](DEPLOYMENTS.md) for prerequisites,
 permissions, approval, rollback, recovery, and current limits.
+For the implementation walkthrough, file responsibilities, and state transitions,
+see [deployment code guide](DEPLOYMENT_CODE.md).
 
 Register a Temporal-orchestrated web application and save canary/blue-green
 configurations:
