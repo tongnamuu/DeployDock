@@ -11,7 +11,7 @@ class DeploymentReconciler(
         val record = store.update(applicationId) { record ->
             val run = record.runs.first { it.id == runId }
             if (run.terminal()) return@update record
-            val config = record.configurations.first { it.id == run.configurationId }
+            val config = record.configurationFor(run)
             val next = try {
                 workloads.authorize(run.actionBy ?: run.requestedBy, record.application, config)
                 advance(record.application, config, run)

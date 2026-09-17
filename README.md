@@ -196,7 +196,10 @@ so grant only the verbs each member needs.
 ## Deployment API
 
 The `/api/v2/deployment-applications` endpoints register deployment targets,
-save immutable configurations, and submit runs. Requests are authenticated with
+save the latest configuration, and submit runs. Each application exposes only one
+saved configuration; saving replaces it and old configuration IDs cannot start
+new runs. Each run retains its original immutable configuration for history and
+rollback. Requests are authenticated with
 the same JWT subject and are limited to namespaces visible to that principal.
 Runs return `202` with a persisted execution ID. A reconciler changes Kubernetes
 resources and checks readiness before reporting success. Configurations, runs,

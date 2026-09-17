@@ -36,7 +36,7 @@ document.querySelectorAll("[data-icon]").forEach((element) => element.replaceWit
 const option = (value, label) => Object.assign(node("option", label), { value });
 const app = () => state.apps.find((value) => value.id === state.appId);
 const selectedRun = () => state.runs.find((value) => value.id === state.runId);
-const configuration = (run) => state.configs.find((value) => value.id === run.configurationId);
+const configuration = (run) => run.configuration || state.configs.find((value) => value.id === run.configurationId);
 const weighted = (config) => config?.webStrategy === "CANARY" && Boolean(config.trafficAdapter || config.canaryRoute);
 const activeRun = () => state.runs.some((run) => !terminal.has(run.status));
 const path = (suffix = "") => `${base}/${encodeURIComponent(state.appId)}${suffix}`;
@@ -326,8 +326,9 @@ function updateFields() {
 }
 
 function renderConfigurations() {
-    $("#configuration-count").textContent = `${state.configs.length}개 revision`;
-    $("#configurations").replaceChildren(...[...state.configs].reverse().map((config) => {
+    const latest = state.configs.reduce((selected, config) => !selected || config.revision > selected.revision ? config : selected, null);
+    $("#configuration-count").textContent = latest ? `최신 r${latest.revision}` : "저장 전";
+    $("#configurations").replaceChildren(...(latest ? [latest] : []).map((config) => {
         const row = node("div", undefined, "configuration-row");
         const summary = node("div");
         summary.append(node("strong", `r${config.revision} · ${strategies[config.webStrategy || config.batchMode]}`), node("p", config.image, "mono"), node("p", `${config.batchMode ? config.batchTargets.join(", ") || app().name : config.replicas ? `${config.replicas} Pods` : "Pod 수 유지"} · ${date(config.savedAt)}`));

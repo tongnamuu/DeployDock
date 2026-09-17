@@ -25,8 +25,11 @@ class DeploymentClient(
     }
 
     fun applications(): List<DeploymentApplication> = store.list().map { it.application }
-    fun configurations(applicationId: String): List<DeploymentConfiguration> = store.get(applicationId).configurations
-    fun runs(applicationId: String): List<DeploymentRun> = store.get(applicationId).runs
+    fun configurations(applicationId: String): List<DeploymentConfiguration> =
+        listOfNotNull(store.get(applicationId).configurations.maxByOrNull { it.revision })
+    fun runs(applicationId: String): List<DeploymentRun> = store.get(applicationId).let { record ->
+        record.runs.map { it.copy(configuration = record.configurationFor(it)) }
+    }
 
     fun saveConfiguration(principal: String, applicationId: String, request: SaveDeploymentConfigurationRequest): DeploymentConfiguration {
         return store.update(applicationId) { record ->
@@ -37,7 +40,8 @@ class DeploymentClient(
                 request.batchTargets, principal, clock.instant(), request.canaryRoute,
                 request.canarySteps, request.progressDeadlineSeconds, request.trafficAdapter, request.trafficOptions)
             workloads.validateTraffic(config)
-            record.copy(configurations = record.configurations + config)
+            record.copy(configurations = listOf(config),
+                runs = record.runs.map { it.copy(configuration = record.configurationFor(it)) })
         }.configurations.last()
     }
 
@@ -50,15 +54,16 @@ class DeploymentClient(
                 return@update record
             }
             if (record.runs.any { !it.terminal() }) throw DeploymentConflictException("application already has an active run")
-            val config = record.configurations.find { it.id == request.configurationId }
+            val config = record.configurations.maxByOrNull { it.revision }
                 ?: throw DeploymentConfigurationNotFoundException(request.configurationId)
+            if (config.id != request.configurationId) throw DeploymentConflictException("only the latest configuration can be deployed; refresh and retry")
             val app = record.application
             requireOrchestrator(app.orchestrator)
             workloads.authorize(principal, app, config)
             val id = newId("run")
             val run = DeploymentRun(id, app.id, config.id, app.kind, app.orchestrator, config.webStrategy,
                 config.batchMode, config.batchTargets, DeploymentRunStatus.QUEUED, principal, clock.instant(),
-                executionId = "deploydock-$id", requestId = request.requestId)
+                executionId = "deploydock-$id", requestId = request.requestId, configuration = config)
             record.copy(runs = record.runs + run)
         }.runs.first { it.requestId == request.requestId }
     }
@@ -67,7 +72,7 @@ class DeploymentClient(
         if (requestId.isBlank() || requestId.length > 128) throw DeploymentValidationException("requestId must contain 1 to 128 characters")
         return store.update(applicationId) { record ->
             val run = record.runs.find { it.id == runId } ?: throw DeploymentValidationException("run does not exist")
-            val config = record.configurations.first { it.id == run.configurationId }
+            val config = record.configurationFor(run)
             workloads.authorize(principal, record.application, config)
             val previous = run.actionRequests[requestId]
             if (previous != null) {

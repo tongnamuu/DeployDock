@@ -18,6 +18,9 @@ node dev/ui/preview.mjs
 Temporal Workflow를 생성하거나 요청 비율을 변경하지 않는다. preview 접속 명령도 예시이며
 해당 Service가 실제 클러스터에 생성된 것은 아니다. 이 서버는 loopback 주소에서만 실행한다.
 제품 JAR에는 `dev/ui`가 포함되지 않고 자동으로 데모 데이터로 전환하는 기능도 없다.
+미리보기 상태를 별도로 내보낸 경우 `UI_PREVIEW_STATE`에 JSON 파일 경로를 지정해 재시작할 수 있다.
+파일은 `apps` 배열과 앱 ID별 `configurations`·`runs` 객체를 포함한다. 저장 설정은 최신 하나만
+복원하고 과거 실행 설정은 실행에 보존한다. 실제 Kubernetes 상태 파일이 아니다.
 
 ## 브라우저 테스트
 

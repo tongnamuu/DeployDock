@@ -38,7 +38,8 @@ API 호출과 preview 접속 명령은 [운영 및 테스트 절차](DEPLOYMENTS
 | `DeploymentConfiguration` | 저장 시점에 고정한 배포 설정 | 이미지 `shop:v2`, 전략 `BLUE_GREEN`, revision 2 |
 | `DeploymentRun` | 특정 설정을 적용하는 한 번의 실행 | `run-...`, 승인 대기, preview 접속 정보 |
 | `DeploymentSnapshot` | 복구에 사용할 실행 전 리소스 정보 | 원본 Deployment, Service selector, HTTPRoute backend, CronJob |
-| `DeploymentRecord` | ConfigMap 하나에 들어가는 앱별 데이터 | 앱 정보 + 설정 목록 + 실행 목록 |
+| `DeploymentRecord` | ConfigMap 하나에 들어가는 앱별 데이터 | 앱 정보 + 최신 설정 한 개 + 실행 목록 |
+| `DeploymentRun.configuration` | 해당 실행을 시작할 때 고정한 설정 | 최신 저장 설정이 바뀌어도 실행·승인·롤백은 이 설정 사용 |
 | `status` | 사용자가 보는 실행 상태 | `RUNNING`, `AWAITING_APPROVAL`, `SUCCEEDED` |
 | `phase` | 다음 호출에서 처리할 내부 단계 | `WAIT_READY`, `SWITCH_WAIT`, `RESTORE` |
 | `action` | 접수됐지만 실행기가 아직 처리하지 않은 요청 | `ADVANCE`, `PROMOTE`, `ABORT` |
@@ -71,8 +72,8 @@ flowchart TD
 ```
 
 `submitRun()`은 먼저 같은 `requestId`가 있는지 찾는다. 같은 설정이면 기존 실행을 반환하고,
-다른 설정이면 충돌로 거부한다. 새 요청이면 활성 실행 유무, 설정 소속, 실행 방식,
-실제 배포 권한을 확인한 다음 `QUEUED` 실행을 저장한다. Kubernetes 배포 완료를 기다리지는
+다른 설정이면 충돌로 거부한다. 새 요청이면 활성 실행 유무, 최신 설정 ID 여부, 실행 방식,
+실제 배포 권한을 확인한 다음 당시 설정과 함께 `QUEUED` 실행을 저장한다. Kubernetes 배포 완료를 기다리지는
 않지만 권한 확인과 저장 요청이 끝나야 응답한다.
 
 `dispatch()`는 기본 5초 간격으로 저장소를 읽는다. `LOCAL`은 재조정 함수를 직접 호출하고,
@@ -206,7 +207,7 @@ ConfigMap 저장과 워크로드 변경은 하나의 트랜잭션이 아니다. 
 
 일반 테스트는 mock API 서버의 상태를 테스트 코드에서 갱신하므로 실제 Kubernetes controller나
 Gateway 데이터 경로까지 검증하지 않는다. 실 클러스터 테스트는 별도 환경변수가 있어야 실행된다.
-Ingress 독립 preview 카나리 추가 후 자동 테스트 36개 통과, 실 클러스터 테스트 1개 미실행을 확인했다.
+최신 설정 단일화 후 자동 테스트 39개 통과, 실 클러스터 테스트 1개 미실행을 확인했다.
 모든 Kubernetes 환경에서 실행을 검증했다는 의미는 아니다.
 
 ## 9. 웹 콘솔

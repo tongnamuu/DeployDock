@@ -20,6 +20,16 @@ const runs = new Map([
     ["app-billing", []],
 ]);
 const ids = new Map();
+if (process.env.UI_PREVIEW_STATE) {
+    const saved = JSON.parse(await readFile(process.env.UI_PREVIEW_STATE, "utf8"));
+    apps.splice(0, apps.length, ...saved.apps);
+    configurations.clear(); runs.clear();
+    for (const app of apps) {
+        const previous = saved.configurations[app.id] || [];
+        runs.set(app.id, (saved.runs[app.id] || []).map((run) => ({ ...run, configuration: run.configuration || previous.find((config) => config.id === run.configurationId) })));
+        configurations.set(app.id, previous.slice(-1));
+    }
+}
 const terminal = (run) => ["SUCCEEDED", "FAILED", "ABORTED", "ROLLED_BACK"].includes(run.status);
 const send = (response, status, body) => { response.writeHead(status, { "Content-Type": "application/json", "Cache-Control": "no-store" }); response.end(JSON.stringify(body)); };
 const later = (run, values) => { setTimeout(() => Object.assign(run, values), 1800); };
@@ -58,26 +68,28 @@ async function handle(request, response) {
     const app = apps.find((app) => app.id === id);
     if (!app) return send(response, 404, { message: "App not found" });
     const records = collection === "configurations" ? configurations.get(id) : runs.get(id);
-    if (request.method === "GET") return send(response, 200, records);
+    if (request.method === "GET") return send(response, 200, collection === "configurations" ? records.slice(-1) : records.map((run) => ({ ...run, configuration: run.configuration || configurations.get(id).find((config) => config.id === run.configurationId) })));
     const key = `${id}:${runId || collection}:${body.requestId}`;
     if (body.requestId && ids.has(key)) return send(response, 202, ids.get(key));
     if (collection === "configurations") {
-        const config = { ...body, id: `cfg-${randomUUID()}`, applicationId: id, revision: records.length + 1, batchTargets: body.batchTargets || [], canarySteps: body.canarySteps || [10, 50], savedBy: "ui-preview", savedAt: timestamp() };
-        records.push(config); return send(response, 201, config);
+        const config = { ...body, id: `cfg-${randomUUID()}`, applicationId: id, revision: (records.at(-1)?.revision || 0) + 1, batchTargets: body.batchTargets || [], canarySteps: body.canarySteps || [10, 50], savedBy: "ui-preview", savedAt: timestamp() };
+        runs.get(id).forEach((run) => { run.configuration ||= records.find((value) => value.id === run.configurationId); });
+        configurations.set(id, [config]); return send(response, 201, config);
     }
     if (!runId) {
         if (records.some((run) => !terminal(run))) return send(response, 409, { message: "진행 중인 배포가 있습니다." });
-        const config = configurations.get(id).find((config) => config.id === body.configurationId);
-        if (!config) return send(response, 404, { message: "Configuration not found" });
+        const config = configurations.get(id).at(-1);
+        if (!config || config.id !== body.configurationId) return send(response, 409, { message: "최신 설정만 배포할 수 있습니다." });
         const run = { ...body, id: `run-${randomUUID()}`, applicationId: id, kind: app.kind, orchestrator: app.orchestrator, webStrategy: config.webStrategy, batchMode: config.batchMode, status: "RUNNING", phase: "WAIT_READY", step: -1, requestedBy: "ui-preview", requestedAt: timestamp() };
         if (app.kind === "WEB" && config.webStrategy !== "ROLLING") run.result = { previewService: `${app.name}-preview`, previewPorts: [80], canaryWeight: 0, trafficMode: config.trafficAdapter ? "WEIGHTED" : config.webStrategy === "CANARY" ? "PREVIEW_ONLY" : null };
+        run.configuration = config;
         records.push(run); ids.set(key, run);
         later(run, run.result ? { status: "AWAITING_APPROVAL", phase: "APPROVAL" } : { status: "SUCCEEDED" });
         return send(response, 202, run);
     }
     const run = records.find((run) => run.id === runId);
     if (!run) return send(response, 404, { message: "Run not found" });
-    const config = configurations.get(id).find((config) => config.id === run.configurationId);
+    const config = run.configuration || configurations.get(id).find((config) => config.id === run.configurationId);
     if (body.action === "ADVANCE") {
         if (run.status !== "AWAITING_APPROVAL" || !config.trafficAdapter || run.step + 1 >= config.canarySteps.length) return send(response, 409, { message: "진행할 단계가 없습니다." });
         run.step++; run.status = "RUNNING"; run.phase = "ROUTE"; run.result.canaryWeight = config.canarySteps[run.step];

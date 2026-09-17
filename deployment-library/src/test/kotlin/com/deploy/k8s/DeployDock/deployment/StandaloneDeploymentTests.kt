@@ -23,6 +23,70 @@ class StandaloneDeploymentTests {
     lateinit var kubernetes: KubernetesClient
 
     @Test
+    fun `saving replaces the sole deployable configuration and rejects stale submissions`() {
+        val store = MemoryStore()
+        val api = DeploymentClient(store, KubernetesDeploymentWorkloads(kubernetes))
+        val app = api.registerApplication("client", RegisterApplicationRequest("web", "team-a", ApplicationKind.WEB))
+        val old = api.saveConfiguration("client", app.id, SaveDeploymentConfigurationRequest("example/web:v2", webStrategy = WebDeploymentStrategy.ROLLING))
+        val latest = api.saveConfiguration("client", app.id, SaveDeploymentConfigurationRequest("example/web:v3", webStrategy = WebDeploymentStrategy.BLUE_GREEN))
+        assertEquals(2, latest.revision)
+        assertEquals(listOf(latest), api.configurations(app.id))
+        assertEquals(listOf(latest), store.get(app.id).configurations)
+        assertFailsWith<DeploymentConflictException> {
+            api.submitRun("client", app.id, SubmitDeploymentRunRequest(old.id, "stale-release"))
+        }
+        assertTrue(api.runs(app.id).isEmpty())
+        assertEquals(latest, api.submitRun("client", app.id, SubmitDeploymentRunRequest(latest.id, "current-release")).configuration)
+    }
+
+    @Test
+    fun `new configuration cannot change active execution or rollback and retries remain idempotent`() {
+        seed()
+        val store = KubernetesDeploymentStore(kubernetes, "team-a")
+        val workloads = KubernetesDeploymentWorkloads(kubernetes)
+        val api = DeploymentClient(store, workloads)
+        val app = api.registerApplication("client", RegisterApplicationRequest("web", "team-a", ApplicationKind.WEB))
+        val original = api.saveConfiguration("client", app.id, SaveDeploymentConfigurationRequest("example/web:v2", webStrategy = WebDeploymentStrategy.ROLLING))
+        val request = SubmitDeploymentRunRequest(original.id, "release")
+        val run = api.submitRun("client", app.id, request)
+        val latest = api.saveConfiguration("client", app.id, SaveDeploymentConfigurationRequest("example/web:v3", webStrategy = WebDeploymentStrategy.BLUE_GREEN))
+        assertEquals(run.id, api.submitRun("client", app.id, request).id)
+        assertEquals(listOf(latest), store.get(app.id).configurations)
+        assertEquals(original, api.runs(app.id).single().configuration)
+        val reconciler = DeploymentReconciler(KubernetesDeploymentStore(kubernetes, "team-a"), workloads, Clock.systemUTC())
+        repeat(2) { reconciler.reconcile(app.id, run.id) }
+        ready("web")
+        assertTrue(reconciler.reconcile(app.id, run.id))
+        assertEquals("example/web:v2", kubernetes.apps().deployments().inNamespace("team-a").withName("web").get().spec.template.spec.containers.single().image)
+        api.action("client", app.id, run.id, DeploymentAction.ROLLBACK, "rollback")
+        reconciler.reconcile(app.id, run.id)
+        ready("web")
+        assertTrue(reconciler.reconcile(app.id, run.id))
+        assertEquals(DeploymentRunStatus.ROLLED_BACK, api.runs(app.id).single().status)
+        assertEquals("example/web:v1", kubernetes.apps().deployments().inNamespace("team-a").withName("web").get().spec.template.spec.containers.single().image)
+        assertEquals(listOf(latest), api.configurations(app.id))
+    }
+
+    @Test
+    fun `legacy configuration history is compacted without losing run settings`() {
+        val store = MemoryStore()
+        val api = DeploymentClient(store, KubernetesDeploymentWorkloads(kubernetes))
+        val app = api.registerApplication("client", RegisterApplicationRequest("web", "team-a", ApplicationKind.WEB))
+        val old = api.saveConfiguration("client", app.id, SaveDeploymentConfigurationRequest("example/web:v2", webStrategy = WebDeploymentStrategy.ROLLING))
+        val run = api.submitRun("client", app.id, SubmitDeploymentRunRequest(old.id, "release"))
+        val previousLatest = old.copy(id = "legacy-latest", revision = 2, image = "example/web:v3")
+        store.update(app.id) { it.copy(configurations = listOf(old, previousLatest), runs = listOf(run.copy(configuration = null))) }
+        assertEquals(listOf(previousLatest), api.configurations(app.id))
+        assertEquals(old, api.runs(app.id).single().configuration)
+        val latest = api.saveConfiguration("client", app.id, SaveDeploymentConfigurationRequest("example/web:v4", webStrategy = WebDeploymentStrategy.ROLLING))
+        assertEquals(3, latest.revision)
+        assertEquals(listOf(latest), store.get(app.id).configurations)
+        assertEquals(old, store.get(app.id).runs.single().configuration)
+        val mapper = deploymentMapper()
+        assertEquals(store.get(app.id), mapper.readValue(mapper.writeValueAsBytes(store.get(app.id)), DeploymentRecord::class.java))
+    }
+
+    @Test
     fun `plain library runs rolling deployment without Spring Temporal or gateway`() {
         assertFailsWith<ClassNotFoundException> { Class.forName("org.springframework.boot.SpringApplication") }
         assertFailsWith<ClassNotFoundException> { Class.forName("io.temporal.client.WorkflowClient") }

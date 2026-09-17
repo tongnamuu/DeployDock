@@ -81,7 +81,8 @@ try {
     assert.equal(await page.locator(".configuration-row").count(), 1);
     await page.locator('[name="trafficOptions"]').fill('{"routeName":"shop-web"}');
     await page.getByRole("button", { name: "설정 저장", exact: true }).click();
-    await page.waitForFunction(() => document.querySelectorAll(".configuration-row").length === 2);
+    await page.waitForFunction(() => document.querySelector("#configuration-count").textContent === "최신 r2");
+    assert.equal(await page.locator(".configuration-row").count(), 1);
     await page.locator("[data-deploy]").first().click();
     await page.locator("#confirm-submit").click();
     await status("AWAITING_APPROVAL");

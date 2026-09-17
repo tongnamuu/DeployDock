@@ -120,6 +120,7 @@ data class DeploymentRun(
     val recoveryError: String? = null,
     val actionBy: String? = null,
     val actionRequests: Map<String, DeploymentAction> = emptyMap(),
+    val configuration: DeploymentConfiguration? = null,
 )
 
 enum class DeploymentAction { ADVANCE, PROMOTE, ABORT, ROLLBACK }
@@ -169,3 +170,6 @@ fun DeploymentRun.terminal(): Boolean = status in setOf(DeploymentRunStatus.SUCC
 
 fun DeploymentConfiguration.usesWeightedTraffic(): Boolean =
     webStrategy == WebDeploymentStrategy.CANARY && (trafficAdapter != null || canaryRoute != null)
+
+fun DeploymentRecord.configurationFor(run: DeploymentRun): DeploymentConfiguration =
+    run.configuration ?: configurations.first { it.id == run.configurationId }

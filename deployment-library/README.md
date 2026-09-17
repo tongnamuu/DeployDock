@@ -73,6 +73,10 @@ fun main() {
 ```
 
 `DeploymentClient`는 동기 API다. 요청을 저장할 뿐 background thread를 시작하지 않는다.
+`saveConfiguration()`은 최신 설정 하나를 교체하며 `configurations()`는 0~1개만 반환한다.
+신규 실행에는 최신 설정 ID만 사용할 수 있다. 실행 당시 설정은 `DeploymentRun.configuration`에
+고정해 두므로 이후 저장과 무관하게 실행·승인·롤백한다. 이전 다중 설정 형식도 읽을 수 있으며,
+다음 저장 시 과거 실행에 해당 설정을 보존하고 저장 설정은 최신 한 개로 정리한다.
 `reconcile()`은 한 단계를 진행하고 종료 상태 여부를 반환한다. `true`가 성공만을 의미하지는 않는다.
 호출자가 executor, 기존 작업 큐 또는 Temporal Activity에서 반복 호출한다. 재시작 시
 `store.list()`에서 종료되지 않은 실행을 찾아 다시 호출하면 저장된 단계부터 이어간다.
