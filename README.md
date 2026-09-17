@@ -1,5 +1,17 @@
 # DeployDock
 
+롤링 배포의 첫 실제 앱 검증은 [tongnamuu 롤링 실험](dev/rolling/README.md)을 참고한다.
+설정 저장과 적용을 별도로 실행하며, 새 제품 큐·복구 기능의 완성 여부와는 구분한다.
+
+## 프로젝트 구성
+
+현재 빌드는 루트 Gradle 프로젝트 하나이며, 하나의 Spring Boot 앱과 실행 JAR로 구성한다.
+기능은 `src/main/kotlin/com/deploy/k8s/DeployDock` 아래 패키지로 구분한다.
+현재 패키지는 `auth`, `api`, `config`, `kubernetes`이며, 추가 배포·큐·복구 기능도 같은 모듈에 구현한다.
+정적 웹 화면은 같은 앱의 `src/main/resources/static`에서 제공한다.
+HA 구성을 정한 뒤 필요한 실행 역할과 모듈 분리를 결정한다. 자세한 패키지 경계는
+[재구축 계획](docs/architecture/rebuild-plan.md#4-단일-모듈-안의-패키지와-실행-구성)에 정리한다.
+
 DeployDock exposes a reactive API for account authentication and Kubernetes
 namespace discovery. Accounts are stored as `DeployDockUser` custom resources;
 BCrypt password hashes are kept separately in Kubernetes Secrets.
@@ -170,3 +182,52 @@ Namespace objects, cluster-scoped resources, and Kubernetes RBAC resources
 cannot be granted. Workload creation
 and Secret access can still be security-sensitive within the selected namespace,
 so grant only the verbs each member needs.
+
+## Deployment API
+
+The `/api/v2/deployment-applications` endpoints register deployment targets,
+save immutable configurations, and submit runs. Requests are authenticated with
+the same JWT subject and are limited to namespaces visible to that principal.
+Runs execute through the deployment executor and return the generated execution
+plan. When `deploydock.temporal.enabled=true`, Temporal Workflow and Activity
+workers are registered on `deploydock.temporal.task-queue`; otherwise the same
+executor runs locally.
+
+Register a Temporal-orchestrated web application and save canary/blue-green
+configurations:
+
+```shell
+curl -X POST http://localhost:8080/api/v2/deployment-applications \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"shop-web","namespace":"team-a","kind":"WEB","orchestrator":"TEMPORAL"}'
+
+curl -X POST http://localhost:8080/api/v2/deployment-applications/$APP_ID/configurations \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"image":"registry.example.com/shop:v2","replicas":3,"webStrategy":"CANARY"}'
+
+curl -X POST http://localhost:8080/api/v2/deployment-applications/$APP_ID/configurations \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"image":"registry.example.com/shop:v3","replicas":3,"webStrategy":"BLUE_GREEN"}'
+```
+
+Batch applications support grouped and individual deployment modes:
+
+```shell
+curl -X POST http://localhost:8080/api/v2/deployment-applications \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"billing-batch","namespace":"team-a","kind":"BATCH"}'
+
+curl -X POST http://localhost:8080/api/v2/deployment-applications/$BATCH_APP_ID/configurations \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"image":"registry.example.com/billing:v1","batchMode":"GROUPED","batchTargets":["settlement","invoice"]}'
+
+curl -X POST http://localhost:8080/api/v2/deployment-applications/$BATCH_APP_ID/configurations \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"image":"registry.example.com/billing:v2","batchMode":"INDIVIDUAL","batchTargets":["settlement"]}'
+```

@@ -25,6 +25,7 @@ dependencies {
 	implementation("org.springframework.security:spring-security-oauth2-jose")
 	implementation("org.springframework.security:spring-security-oauth2-resource-server")
 	implementation("io.fabric8:kubernetes-client:7.8.0")
+	implementation("io.temporal:temporal-sdk:1.39.0")
 	implementation("io.projectreactor.kotlin:reactor-kotlin-extensions")
 	implementation("org.jetbrains.kotlin:kotlin-reflect")
 	implementation("org.jetbrains.kotlinx:kotlinx-coroutines-reactor")
